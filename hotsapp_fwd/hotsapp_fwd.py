@@ -102,7 +102,7 @@ def on_message(client, userdata, message):
             last_seg = topic.rsplit("/", 1)[-1]  # sista segmentet efter '/'
             allow = (last_seg == DEBUG_ONLY_NAME)
         if not allow:
-            print("DEBUG not {DEBUG_ONLY_NAME}")
+            print(f"[ERROR] Debug stop: {DEBUG_ONLY_NAME}", flush=True)
             return
 
 
