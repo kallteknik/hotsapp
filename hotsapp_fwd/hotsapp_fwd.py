@@ -91,18 +91,19 @@ def on_message(client, userdata, message):
         if delta < DROP_RETAINED_GRACE_SEC:
             return
     # Debug-filter: tillåt endast en specifik sensor om satt
-    print(DEBUG_ONLY_TOPIC)
+    print(DEBUG_ONLY_NAME)
     print(topic.rsplit("/", 1)[-1])
     print(topic)
-    #if DEBUG_ONLY_TOPIC or DEBUG_ONLY_NAME:
-     #   allow = False
-      #  if DEBUG_ONLY_TOPIC:
-       #     allow = (topic == DEBUG_ONLY_TOPIC)  # exakt topic-match
-        #if not allow and DEBUG_ONLY_NAME:
-        #    last_seg = topic.rsplit("/", 1)[-1]  # sista segmentet efter '/'
-        #    allow = (last_seg == DEBUG_ONLY_NAME)
-        #if not allow:
-        #    return
+    if DEBUG_ONLY_TOPIC or DEBUG_ONLY_NAME:
+        allow = False
+        if DEBUG_ONLY_TOPIC:
+            allow = (topic == DEBUG_ONLY_TOPIC)  # exakt topic-match
+        if not allow and DEBUG_ONLY_NAME:
+            last_seg = topic.rsplit("/", 1)[-1]  # sista segmentet efter '/'
+            allow = (last_seg == DEBUG_ONLY_NAME)
+        if not allow:
+            print("DEBUG not {DEBUG_ONLY_NAME}")
+            return
 
 
     raw = message.payload.decode("utf-8", errors="replace")
