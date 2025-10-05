@@ -18,7 +18,7 @@ import time
 import ssl as _ssl
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 import uuid
 import pathlib
 
@@ -26,11 +26,6 @@ import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from websocket import create_connection, WebSocketConnectionClosedException
-
-# --- Client ID (prefer HA core UUID; fallback to persistent /data file) ---
-import uuid, pathlib, json, os
-
-
 
 
 
@@ -85,6 +80,11 @@ VERBOSE         = as_bool(opt("verbose", "1"))
 # ------ CLIENT ID -------
 HA_CORE_UUID_PATH = "/config/.storage/core.uuid"   # needs map: config:ro
 ADDON_CLIENT_ID_PATH = "/data/client_id"           # persistent fallback
+
+
+def _log(msg: str) -> None:
+    print(msg, flush=True)
+
 
 # Optional override via options.json
 CLIENT_ID_OVERRIDE = (opt("client_id_override", "") or "").strip()
@@ -152,8 +152,7 @@ session.mount("https://", adapter)
 # ---------- Hjälpare ----------
 _last_sent_ts: Dict[str, float] = {}  # per address för dedup-fönster
 
-def _log(msg: str) -> None:
-    print(msg, flush=True)
+
 
 def _should_forward(evt: Dict[str, Any]) -> bool:
     """
