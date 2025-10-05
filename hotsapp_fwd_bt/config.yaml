@@ -1,5 +1,5 @@
 name: Hotsapp BT REST Forwarder
-version: "0.0.3"
+version: "0.0.4"
 slug: hotsapp_fwd_bt
 description: Forwards Bluetooth advertisements from HA to an HTTP API.
 arch:
@@ -16,7 +16,7 @@ homeassistant_api: true
 
 # Standardvärden (syns i UI och blir underlag för /data/options.json vid körning)
 options:
-  api_url: "https://hotsappcenter.com/api/api.php"
+  api_url: "https://account.hotsappcenter.com/api/api.php"
   api_token: ""
   dry_run: false
   retry_total: 5
