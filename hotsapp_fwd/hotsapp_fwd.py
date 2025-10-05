@@ -60,13 +60,6 @@ RETRY_TOTAL   = int(opt("retry_total", 5))
 RETRY_BACKOFF = float(opt("retry_backoff", 1.0))
 
 
-#MQTT_HOST = o.get("mqtt_host", "core-mosquitto")
-#MQTT_USER = o.get("mqtt_user", "mqtt-user")
-#MQTT_PASS = o.get("mqtt_password", "1234")
-#TOPIC     = o.get("topic", "zigbee2mqtt/#")
-#API_URL   = o.get("api_url","https://account/hotsappcenter.com/api/api.php?token=kassaskap")
-#API_TOKEN = o.get("api_token","kassaskap")
-
 
 #def get_opt(name, default=None):
     # Läs från add-on options (filen /data/options.json) via env som sätts av run.sh
