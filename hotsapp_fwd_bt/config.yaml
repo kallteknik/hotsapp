@@ -16,7 +16,7 @@ homeassistant_api: true
 
 # Standardvärden (syns i UI och blir underlag för /data/options.json vid körning)
 options:
-  api_url: "https://api.exempel.se/measurements"
+  api_url: "https://hotsappcenter.com/api/api.php"
   api_token: ""
   dry_run: false
   retry_total: 5
