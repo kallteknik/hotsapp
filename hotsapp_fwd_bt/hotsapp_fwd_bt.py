@@ -27,36 +27,61 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from websocket import create_connection, WebSocketConnectionClosedException
 
-# --- Client ID (HA:s unika id om möjligt, annars persistent fallback) ---
-HA_CORE_UUID_PATH = "/config/.storage/core.uuid"   # läs HA:s core-UUID (kräver map: config:ro)
-ADDON_CLIENT_ID_PATH = "/data/client_id"           # fallback-fil som vi skapar själva
+# --- Client ID (prefer HA core UUID; fallback to persistent /data file) ---
+import uuid, pathlib, json, os
+
+
+
+HA_CORE_UUID_PATH = "/config/.storage/core.uuid"   # needs map: config:ro
+ADDON_CLIENT_ID_PATH = "/data/client_id"           # persistent fallback
+
+# Optional override via options.json
+CLIENT_ID_OVERRIDE = (opt("client_id_override", "") or "").strip()
 
 def get_client_id() -> str:
-    # 1) Försök läsa HA:s core.uuid
+    # 0) explicit override
+    if CLIENT_ID_OVERRIDE:
+        _log(f"[CLIENT_ID] using override from options")
+        return CLIENT_ID_OVERRIDE
+
+    # 1) try HA core uuid
     try:
         if os.path.exists(HA_CORE_UUID_PATH):
             with open(HA_CORE_UUID_PATH, "r", encoding="utf-8") as f:
                 j = json.load(f)
             ha_uuid = j.get("data", {}).get("uuid")
             if ha_uuid:
+                _log(f"[CLIENT_ID] using HA core UUID from {HA_CORE_UUID_PATH}")
                 return ha_uuid
-    except Exception:
-        pass
+            else:
+                _log(f"[CLIENT_ID] core.uuid found but no 'data.uuid' field")
+    except Exception as e:
+        _log(f"[CLIENT_ID] failed reading HA core UUID: {e}")
 
-    # 2) Egen persistent fallback under /data
+    # 2) persistent fallback under /data
     try:
         p = pathlib.Path(ADDON_CLIENT_ID_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
-            return p.read_text(encoding="utf-8").strip()
+            cid = p.read_text(encoding="utf-8").strip()
+            if cid:
+                _log(f"[CLIENT_ID] using persistent fallback from {ADDON_CLIENT_ID_PATH}")
+                return cid
         new_id = str(uuid.uuid4())
         p.write_text(new_id + "\n", encoding="utf-8")
+        _log(f"[CLIENT_ID] created persistent fallback at {ADDON_CLIENT_ID_PATH}")
         return new_id
-    except Exception:
-        # 3) Sista utväg: nytt UUID i minnet
-        return str(uuid.uuid4())
+    except Exception as e:
+        _log(f"[CLIENT_ID] fallback write failed: {e}")
 
-# Global, återanvändbar klient-id
+    # 3) last resort (non-persistent for this process)
+    cid = str(uuid.uuid4())
+    _log("[CLIENT_ID] WARNING: using ephemeral UUID (no core.uuid and /data not writable)")
+    return cid
+
 CLIENT_ID = get_client_id()
+
+
 
 
 # ---------- Konfiguration från miljö och options.json ----------
