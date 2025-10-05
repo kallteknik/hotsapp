@@ -10,41 +10,89 @@ import json
 
 with open("/data/options.json") as f:
     o = json.load(f)
-MQTT_HOST = o.get("mqtt_host", "core-mosquitto")
-MQTT_USER = o.get("mqtt_user", "mqtt-user")
-MQTT_PASS = o.get("mqtt_password", "1234")
-TOPIC     = o.get("topic", "zigbee2mqtt/#")
-API_URL   = o.get("api_url","https://account/hotsappcenter.com/api/api.php?token=kassaskap")
-API_TOKEN = o.get("api_token","kassaskap")
+def opt(name, default=None):
+    return o.get(name, default)
+
+# ==== Options (fyll på här efter behov) ====
+MQTT_HOST = opt("mqtt_host", "core-mosquitto")
+MQTT_PORT = opt("mqtt_port", 1883)
+MQTT_USER = opt("mqtt_user", "mqtt-user")
+MQTT_PASS = opt("mqtt_password", "1234")
+TOPIC     = opt("topic", "zigbee2mqtt/#")
+
+API_URL   = opt("api_url", "https://hotsappcenter.com/api/api.php?token=kassaskap")
+API_TOKEN = opt("api_token", "kassaskap")
+
+DEBUG_ONLY_TOPIC = opt("debug_only_topic", "")
+DEBUG_ONLY_NAME  = opt("debug_only_name", "")
+DRY_RUN          = opt("dry_run", False)
 
 
-def get_opt(name, default=None):
+
+def as_bool(v):
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in {"1","true","yes","on"}
+
+# ---- opt()-varianter (lowercase nycklar i options.json) ----
+MQTT_HOST     = opt("mqtt_host", "core-mosquitto")
+MQTT_PORT     = int(opt("mqtt_port", 1883))
+MQTT_TLS      = as_bool(opt("mqtt_tls", "0"))
+MQTT_CA_CERT  = opt("mqtt_ca_cert")
+MQTT_CERTFILE = opt("mqtt_certfile")
+MQTT_KEYFILE  = opt("mqtt_keyfile")
+MQTT_USERNAME = opt("mqtt_username")
+MQTT_PASSWORD = opt("mqtt_password")
+
+DEBUG_ONLY_TOPIC = opt("debug_only_topic", "")
+DEBUG_ONLY_NAME  = opt("debug_only_name", "")
+
+TOPIC                  = opt("topic", "zigbee2mqtt/#")
+EXCLUDE_BRIDGE         = as_bool(opt("exclude_bridge", "1"))
+DROP_RETAINED_GRACE_SEC= int(opt("drop_retained_grace_sec", 3))
+
+API_URL   = opt("api_url", "https://api.exempel.se/measurements")
+API_TOKEN = opt("api_token")
+
+DRY_RUN = as_bool(opt("dry_run", "0"))
+raw     = opt("dry_run", "")
+RETRY_TOTAL   = int(opt("retry_total", 5))
+RETRY_BACKOFF = float(opt("retry_backoff", 1.0))
+
+
+#MQTT_HOST = o.get("mqtt_host", "core-mosquitto")
+#MQTT_USER = o.get("mqtt_user", "mqtt-user")
+#MQTT_PASS = o.get("mqtt_password", "1234")
+#TOPIC     = o.get("topic", "zigbee2mqtt/#")
+#API_URL   = o.get("api_url","https://account/hotsappcenter.com/api/api.php?token=kassaskap")
+#API_TOKEN = o.get("api_token","kassaskap")
+
+
+#def get_opt(name, default=None):
     # Läs från add-on options (filen /data/options.json) via env som sätts av run.sh
-    return os.getenv(name, str(default) if default is not None else None)
+    #return os.getenv(name, str(default) if default is not None else None)
 
-MQTT_HOST = get_opt("MQTT_HOST","core-mosquitto")
-MQTT_PORT = int(get_opt("MQTT_PORT","1883"))
-MQTT_TLS  = get_opt("MQTT_TLS","0") == "1"
-MQTT_CA_CERT = get_opt("MQTT_CA_CERT")
-MQTT_CERTFILE = get_opt("MQTT_CERTFILE")
-MQTT_KEYFILE  = get_opt("MQTT_KEYFILE")
-MQTT_USERNAME = get_opt("MQTT_USERNAME")
-MQTT_PASSWORD = get_opt("MQTT_PASSWORD")
-DEBUG_ONLY_TOPIC = get_opt("DEBUG_ONLY_TOPIC", "")
-DEBUG_ONLY_NAME  = get_opt("DEBUG_ONLY_NAME", "")
+#MQTT_HOST = get_opt("MQTT_HOST","core-mosquitto")
+#MQTT_PORT = int(get_opt("MQTT_PORT","1883"))
+#MQTT_TLS  = get_opt("MQTT_TLS","0") == "1"
+#MQTT_CA_CERT = get_opt("MQTT_CA_CERT")
+#MQTT_CERTFILE = get_opt("MQTT_CERTFILE")
+#MQTT_KEYFILE  = get_opt("MQTT_KEYFILE")
+#MQTT_USERNAME = get_opt("MQTT_USERNAME")
+#MQTT_PASSWORD = get_opt("MQTT_PASSWORD")
+#DEBUG_ONLY_TOPIC = get_opt("DEBUG_ONLY_TOPIC", "")
+#DEBUG_ONLY_NAME  = get_opt("DEBUG_ONLY_NAME", "")
+#
+#TOPIC = get_opt("TOPIC","zigbee2mqtt/#")
+#EXCLUDE_BRIDGE = get_opt("EXCLUDE_BRIDGE","1") == "1"
+#DROP_RETAINED_GRACE_SEC = int(get_opt("DROP_RETAINED_GRACE_SEC","3"))
 
-TOPIC = get_opt("TOPIC","zigbee2mqtt/#")
-EXCLUDE_BRIDGE = get_opt("EXCLUDE_BRIDGE","1") == "1"
-DROP_RETAINED_GRACE_SEC = int(get_opt("DROP_RETAINED_GRACE_SEC","3"))
-
-API_URL = get_opt("API_URL","https://api.exempel.se/measurements")
-API_TOKEN = get_opt("API_TOKEN")
-DRY_RUN = get_opt("DRY_RUN", "0") == "1"
-raw = get_opt("DRY_RUN", "")
-
-
-RETRY_TOTAL = int(get_opt("RETRY_TOTAL","5"))
-RETRY_BACKOFF = float(get_opt("RETRY_BACKOFF","1.0"))
+#API_URL = get_opt("API_URL","https://api.exempel.se/measurements")
+#API_TOKEN = get_opt("API_TOKEN")
+#DRY_RUN = get_opt("DRY_RUN", "0") == "1"
+#raw = get_opt("DRY_RUN", "")
+#RETRY_TOTAL = int(get_opt("RETRY_TOTAL","5"))
+#RETRY_BACKOFF = float(get_opt("RETRY_BACKOFF","1.0"))
 
 start_ts = datetime.now(timezone.utc)
 
