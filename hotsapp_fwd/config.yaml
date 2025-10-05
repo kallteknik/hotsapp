@@ -1,5 +1,5 @@
 name: Hotsapp Z2M REST Forwarder
-version: "1.1.0"
+version: "1.1.2"
 slug: hotsapp_fwd
 description: Forwards MQTT messages from Zigbee2MQTT to an HTTP API.
 arch:
@@ -16,8 +16,8 @@ options:
   topic: "zigbee2mqtt/#"
   exclude_bridge: true
   drop_retained_grace_sec: 3
-  api_url: "https://account.hotsappcenter.com/api/api.php?token=kassaskap"
-  api_token: "kassaskap"
+  api_url: "https://account.hotsappcenter.com/api/api.php"
+  api_token: ""
   dry_run: false
   mqtt_username: "mqtt-user"
   mqtt_password: "1234"

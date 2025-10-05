@@ -138,7 +138,8 @@ def on_message(client, userdata, message):
         print(f"[DRY_RUN] Would POST to {API_URL}: {json.dumps(body)[:500]}", flush=True)
         return
     try:
-        r = session.post(API_URL, headers=headers, data=json.dumps(body), timeout=15)
+        #BORT r = session.post(API_URL, headers=headers, data=json.dumps(body), timeout=15)
+        r = session.post(API_URL, headers=headers, json=body, timeout=15)
         if r.status_code >= 300:
             print(f"[WARN] HTTP {r.status_code}: {r.text[:300]}", flush=True)
         else:
