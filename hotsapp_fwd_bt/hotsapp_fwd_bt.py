@@ -32,6 +32,57 @@ import uuid, pathlib, json, os
 
 
 
+
+
+
+
+
+# ---------- Konfiguration från miljö och options.json ----------
+ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
+HA_WS_URL = os.getenv("HA_WS_URL", "ws://supervisor/core/websocket")
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN", "")
+
+def _read_options(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_options = _read_options(ADDON_OPTIONS_PATH)
+
+def opt(name: str, default: Any = None) -> Any:
+    # options-nycklar kommer ofta i lowercase
+    return _options.get(name, default)
+
+def as_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() in {"1","true","yes","y","on"}
+
+# ---- HTTP-forward inställningar ----
+API_URL         = opt("api_url",  "https://api.exempel.se/measurements")
+API_TOKEN       = opt("api_token")
+DRY_RUN         = as_bool(opt("dry_run", "0"))
+RETRY_TOTAL     = int(opt("retry_total", 5))
+RETRY_BACKOFF   = float(opt("retry_backoff", 1.0))
+
+# ---- BT-filter/inställningar från options ----
+# Du kan ange en eller flera av dessa för att begränsa trafiken
+FILTER_ADDRESS          = opt("bt_address")                  # ex: "AA:BB:CC:DD:EE:FF"
+FILTER_SERVICE_UUIDS    = set(opt("bt_service_uuids", []) or [])   # lista av UUID-strängar
+FILTER_MANUFACTURER_IDS = set(opt("bt_manufacturer_ids", []) or [])# lista av int
+RSSI_MIN                = int(opt("rssi_min", -999))         # t.ex. -85
+INCLUDE_CONNECTABLE_ONLY= as_bool(opt("include_connectable_only", "0"))
+DEDUP_WINDOW_SEC        = float(opt("dedup_window_sec", 0.5)) # tidsfönster för av-dedup (per address)
+
+# ---- Övrigt ----
+CLIENT_NAME     = opt("client_name", "hotsapp_fwd_bt")
+VERBOSE         = as_bool(opt("verbose", "1"))
+
+# ------ CLIENT ID -------
 HA_CORE_UUID_PATH = "/config/.storage/core.uuid"   # needs map: config:ro
 ADDON_CLIENT_ID_PATH = "/data/client_id"           # persistent fallback
 
@@ -82,52 +133,6 @@ def get_client_id() -> str:
 CLIENT_ID = get_client_id()
 
 
-
-
-# ---------- Konfiguration från miljö och options.json ----------
-ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
-HA_WS_URL = os.getenv("HA_WS_URL", "ws://supervisor/core/websocket")
-SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN", "")
-
-def _read_options(path: str) -> Dict[str, Any]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-_options = _read_options(ADDON_OPTIONS_PATH)
-
-def opt(name: str, default: Any = None) -> Any:
-    # options-nycklar kommer ofta i lowercase
-    return _options.get(name, default)
-
-def as_bool(v: Any) -> bool:
-    if isinstance(v, bool):
-        return v
-    if v is None:
-        return False
-    return str(v).strip().lower() in {"1","true","yes","y","on"}
-
-# ---- HTTP-forward inställningar ----
-API_URL         = opt("api_url",  "https://api.exempel.se/measurements")
-API_TOKEN       = opt("api_token")
-DRY_RUN         = as_bool(opt("dry_run", "0"))
-RETRY_TOTAL     = int(opt("retry_total", 5))
-RETRY_BACKOFF   = float(opt("retry_backoff", 1.0))
-
-# ---- BT-filter/inställningar från options ----
-# Du kan ange en eller flera av dessa för att begränsa trafiken
-FILTER_ADDRESS          = opt("bt_address")                  # ex: "AA:BB:CC:DD:EE:FF"
-FILTER_SERVICE_UUIDS    = set(opt("bt_service_uuids", []) or [])   # lista av UUID-strängar
-FILTER_MANUFACTURER_IDS = set(opt("bt_manufacturer_ids", []) or [])# lista av int
-RSSI_MIN                = int(opt("rssi_min", -999))         # t.ex. -85
-INCLUDE_CONNECTABLE_ONLY= as_bool(opt("include_connectable_only", "0"))
-DEDUP_WINDOW_SEC        = float(opt("dedup_window_sec", 0.5)) # tidsfönster för av-dedup (per address)
-
-# ---- Övrigt ----
-CLIENT_NAME     = opt("client_name", "hotsapp_fwd_bt")
-VERBOSE         = as_bool(opt("verbose", "1"))
 
 # ---------- HTTP session med retries ----------
 session = requests.Session()
