@@ -17,28 +17,25 @@ HA_CORE_UUID_PATH = "/config/.storage/core.uuid"  # finns i HA
 ADDON_CLIENT_ID_PATH = "/data/client_id"         # vår egen fallback
 
 def get_client_id() -> str:
-    # 1) Försök läsa Home Assistant-instansens UUID
     try:
         if os.path.exists(HA_CORE_UUID_PATH):
             with open(HA_CORE_UUID_PATH, "r", encoding="utf-8") as f:
                 j = json.load(f)
             ha_uuid = j.get("data", {}).get("uuid")
             if ha_uuid:
-                return f"ha:{ha_uuid}"
+                return ha_uuid   # <-- ändrat här
     except Exception:
         pass
 
-    # 2) Fallback: spara egen UUID i /data
     try:
         p = pathlib.Path(ADDON_CLIENT_ID_PATH)
         if p.exists():
             return p.read_text(encoding="utf-8").strip()
-        new_id = f"addon:{uuid.uuid4()}"
+        new_id = str(uuid.uuid4())    # <-- ändrat här
         p.write_text(new_id + "\n", encoding="utf-8")
         return new_id
     except Exception:
-        # 3) Sista utvägen: volatil runtime-uuid
-        return f"runtime:{uuid.uuid4()}"
+        return str(uuid.uuid4())      # <-- ändrat här
 
 # >>> Skapa en global, återanvändbar klient-ID
 CLIENT_ID = get_client_id()
