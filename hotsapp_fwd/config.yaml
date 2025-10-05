@@ -1,0 +1,38 @@
+name: Zigbee2MQTT REST Forwarder
+version: "1.9.4"
+slug: hotsapp_fwd
+description: Forwards MQTT messages from Zigbee2MQTT to an HTTP API.
+arch:
+  - aarch64
+  - armv7
+  - amd64
+init: false
+startup: services
+boot: auto
+host_network: true
+options:
+  mqtt_host: "core-mosquitto"
+  mqtt_port: 1883
+  topic: "zigbee2mqtt/#"
+  exclude_bridge: true
+  drop_retained_grace_sec: 3
+  api_url: "https://account.hotsappcenter.com/api/api.php?token=kassaskap"
+  api_token: "kassaskap"
+  dry_run: false
+  mqtt_user: "mqtt-user"
+  mqtt_password: "1234"
+  debug_only_topic: "1"
+  debug_only_name: "2"
+schema:
+  mqtt_host: str
+  mqtt_port: int
+  topic: str
+  exclude_bridge: bool
+  drop_retained_grace_sec: int
+  api_url: str
+  api_token: str
+  dry_run: bool
+  mqtt_user: str
+  mqtt_password: str
+  debug_only_topic: str
+  debug_only_name: str
