@@ -11,6 +11,40 @@ import json
 from time import monotonic
 _last = {}
 
+import uuid, pathlib, json, os
+
+HA_CORE_UUID_PATH = "/config/.storage/core.uuid"  # finns i HA
+ADDON_CLIENT_ID_PATH = "/data/client_id"         # vår egen fallback
+
+def get_client_id() -> str:
+    # 1) Försök läsa Home Assistant-instansens UUID
+    try:
+        if os.path.exists(HA_CORE_UUID_PATH):
+            with open(HA_CORE_UUID_PATH, "r", encoding="utf-8") as f:
+                j = json.load(f)
+            ha_uuid = j.get("data", {}).get("uuid")
+            if ha_uuid:
+                return f"ha:{ha_uuid}"
+    except Exception:
+        pass
+
+    # 2) Fallback: spara egen UUID i /data
+    try:
+        p = pathlib.Path(ADDON_CLIENT_ID_PATH)
+        if p.exists():
+            return p.read_text(encoding="utf-8").strip()
+        new_id = f"addon:{uuid.uuid4()}"
+        p.write_text(new_id + "\n", encoding="utf-8")
+        return new_id
+    except Exception:
+        # 3) Sista utvägen: volatil runtime-uuid
+        return f"runtime:{uuid.uuid4()}"
+
+# >>> Skapa en global, återanvändbar klient-ID
+CLIENT_ID = get_client_id()
+
+
+
 with open("/data/options.json") as f:
     o = json.load(f)
 def opt(name, default=None):
@@ -62,6 +96,8 @@ session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 headers = {"Content-Type":"application/json"}
+headers["X-Client-Id"] = CLIENT_ID
+
 if API_TOKEN:
     headers["Authorization"] = f"Bearer {API_TOKEN}"
 
