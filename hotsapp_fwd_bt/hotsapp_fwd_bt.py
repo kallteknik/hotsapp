@@ -19,11 +19,45 @@ import ssl as _ssl
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+import uuid
+import pathlib
 
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from websocket import create_connection, WebSocketConnectionClosedException
+
+# --- Client ID (HA:s unika id om möjligt, annars persistent fallback) ---
+HA_CORE_UUID_PATH = "/config/.storage/core.uuid"   # läs HA:s core-UUID (kräver map: config:ro)
+ADDON_CLIENT_ID_PATH = "/data/client_id"           # fallback-fil som vi skapar själva
+
+def get_client_id() -> str:
+    # 1) Försök läsa HA:s core.uuid
+    try:
+        if os.path.exists(HA_CORE_UUID_PATH):
+            with open(HA_CORE_UUID_PATH, "r", encoding="utf-8") as f:
+                j = json.load(f)
+            ha_uuid = j.get("data", {}).get("uuid")
+            if ha_uuid:
+                return ha_uuid
+    except Exception:
+        pass
+
+    # 2) Egen persistent fallback under /data
+    try:
+        p = pathlib.Path(ADDON_CLIENT_ID_PATH)
+        if p.exists():
+            return p.read_text(encoding="utf-8").strip()
+        new_id = str(uuid.uuid4())
+        p.write_text(new_id + "\n", encoding="utf-8")
+        return new_id
+    except Exception:
+        # 3) Sista utväg: nytt UUID i minnet
+        return str(uuid.uuid4())
+
+# Global, återanvändbar klient-id
+CLIENT_ID = get_client_id()
+
 
 # ---------- Konfiguration från miljö och options.json ----------
 ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
@@ -139,7 +173,11 @@ def _should_forward(evt: Dict[str, Any]) -> bool:
     return True
 
 def _post_measurement(event_payload: Dict[str, Any]) -> None:
-    headers = {"Content-Type": "application/json"}
+    # Basheaders inkl. klient-id
+    headers = {
+        "Content-Type": "application/json",
+        "x-client-id": CLIENT_ID,
+    }
     if API_TOKEN:
         headers["Authorization"] = f"Bearer {API_TOKEN}"
 
@@ -154,14 +192,25 @@ def _post_measurement(event_payload: Dict[str, Any]) -> None:
         _log(f"[DRY_RUN] Would POST to {API_URL}: {json.dumps(body)[:600]}")
         return
 
-    #r = session.post(API_URL, headers=headers, json=body, timeout=15)
-    #r.raise_for_status()
-    r = session.post(API_URL, headers=headers, json=body, timeout=15)
     try:
-        r.raise_for_status()
-    except requests.HTTPError:
-        _log(f"[HTTP] {r.status_code} {r.reason}; resp: {r.text[:800]}")
+        r = session.post(API_URL, headers=headers, json=body, timeout=15)
+    except Exception as ex:
+        _log(f"[HTTP] request error before response: {ex}")
         raise
+
+    # Logga status + (truncerad) svarskropp
+    resp_text = (r.text or "")
+    snippet = resp_text[:800]
+    ct = r.headers.get("Content-Type", "")
+    if r.ok:
+        _log(f"[HTTP] OK {r.status_code} ({ct})")
+        if snippet.strip():
+            _log(f"[HTTP] resp: {snippet}")
+    else:
+        _log(f"[HTTP] ERR {r.status_code} {r.reason} ({ct}); resp: {snippet}")
+        r.raise_for_status()
+
+
 
 def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     """Normalisera en annons-post från HA (stöd för olika fältvarianter)."""
