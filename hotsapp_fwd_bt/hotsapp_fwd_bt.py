@@ -163,6 +163,39 @@ def _post_measurement(event_payload: Dict[str, Any]) -> None:
         _log(f"[HTTP] {r.status_code} {r.reason}; resp: {r.text[:800]}")
         raise
 
+def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalisera en annons-post från HA (stöd för olika fältvarianter)."""
+    device = e.get("device") or {}
+    address = (e.get("address") or device.get("address") or device.get("id") or "").upper()
+    rssi = e.get("rssi")
+    tx_power = e.get("tx_power")
+    connectable = e.get("connectable")
+    name = e.get("name")
+
+    service_uuids = e.get("service_uuids") or e.get("uuids") or []
+
+    manufacturer_data = e.get("manufacturer_data")
+    if isinstance(manufacturer_data, list):
+        # Om formatet är [[id, val], ...] -> gör om till {id: val}
+        try:
+            manufacturer_data = {int(k): v for k, v in manufacturer_data}
+        except Exception:
+            pass
+
+    service_data = e.get("service_data") or e.get("serviceData")
+    tstamp = e.get("time") or e.get("timestamp")
+
+    return {
+        "name": name,
+        "address": address,
+        "rssi": rssi,
+        "tx_power": tx_power,
+        "connectable": connectable,
+        "service_uuids": service_uuids,
+        "manufacturer_data": manufacturer_data,
+        "service_data": service_data,
+        "time": tstamp,
+    }
 
 # ---------- WebSocket loop ----------
 def _auth_and_subscribe(ws):
@@ -200,59 +233,50 @@ def _event_loop(ws):
         msg = json.loads(raw)
 
         if msg.get("type") == "event" and "event" in msg:
-            e = msg["event"] or {}
+            ev = msg["event"] or {}
 
-            # Vissa versioner lägger allt under event["data"]
-            if "address" not in e and isinstance(e.get("data"), dict):
-                e = e["data"]
+            # Ny form: listor under add/update/remove
+            if any(isinstance(ev.get(k), list) for k in ("add", "update", "remove")):
+                # Vi postar för add och update; remove hoppar vi över
+                for kind in ("add", "update"):
+                    recs = ev.get(kind) or []
+                    for rec in recs:
+                        e_norm = _normalize_adv(rec)
 
-            # Vissa versioner skickar device-objekt
-            device = e.get("device") or {}
-            address = (e.get("address") or device.get("address") or device.get("id") or "")
-            rssi = e.get("rssi")
-            tx_power = e.get("tx_power")
-            connectable = e.get("connectable")
+                        if VERBOSE and not e_norm.get("address") and e_norm.get("rssi") is None:
+                            _log(f"[WS] Oväntad annons-post, visar rå en gång:\n{json.dumps(rec, ensure_ascii=False)[:1200]}")
 
-            # service_uuids kan ligga direkt eller under advertisement/service
-            service_uuids = e.get("service_uuids") or e.get("uuids") or []
+                        if _should_forward({"event": e_norm}):
+                            try:
+                                _post_measurement(e_norm)
+                            except Exception as ex:
+                                _log(f"[HTTP] POST failed: {ex}")
 
-            # manufacturer_data kan vara dict { "76": "base64..." } eller lista/tupler
-            manufacturer_data = e.get("manufacturer_data")
-            if isinstance(manufacturer_data, list):
-                # om formatet är [[id, bytes/base64], ...] -> gör om till {id: val}
-                try:
-                    manufacturer_data = {int(k): v for k, v in manufacturer_data}
-                except Exception:
-                    pass
+                # (valfritt) logga antal för felsökning
+                if VERBOSE:
+                    n_add = len(ev.get("add") or [])
+                    n_upd = len(ev.get("update") or [])
+                    n_rem = len(ev.get("remove") or [])
+                    _log(f"[WS] batch: add={n_add} update={n_upd} remove={n_rem}")
 
-            service_data = e.get("service_data") or e.get("serviceData")
+            else:
+                # Fallback: äldre/singel event-format
+                e = ev or {}
+                if "address" not in e and isinstance(e.get("data"), dict):
+                    e = e["data"]
 
-            # vissa payloads har explicit tidsfält, annars fyll i nu
-            tstamp = e.get("time") or e.get("timestamp")
+                e_norm = _normalize_adv(e)
 
-            # Uppdatera e med harmoniserade fält så att filtren funkar
-            e_norm = {
-                "address": address,
-                "rssi": rssi,
-                "tx_power": tx_power,
-                "connectable": connectable,
-                "service_uuids": service_uuids,
-                "manufacturer_data": manufacturer_data,
-                "service_data": service_data,
-                "time": tstamp,
-            }
+                if VERBOSE and not e_norm.get("address") and e_norm.get("rssi") is None:
+                    _log(f"[WS] Oväntad event-form, visar rå en gång:\n{json.dumps(msg, ensure_ascii=False)[:1200]}")
 
-            # Om formen fortfarande saknar address/rssi – logga första gången för felsökning
-            if VERBOSE and not e_norm.get("address") and not e_norm.get("rssi"):
-                _log(f"[WS] Oväntad event-form, visar rå event en gång:\n{json.dumps(msg, ensure_ascii=False)[:1200]}")
+                if _should_forward({"event": e_norm}):
+                    try:
+                        _post_measurement(e_norm)
+                    except Exception as ex:
+                        _log(f"[HTTP] POST failed: {ex}")
 
-            # Använd filtren på den normaliserade formen
-            msg_for_filter = {"event": e_norm}
-            if _should_forward(msg_for_filter):
-                try:
-                    _post_measurement(e_norm)
-                except Exception as ex:
-                    _log(f"[HTTP] POST failed: {ex}")
+                        
 
 def main():
     # Reconnect-loop
