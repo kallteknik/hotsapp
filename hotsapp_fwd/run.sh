@@ -11,7 +11,7 @@ export MQTT_TLS="$(jq -r '( .mqtt_tls // false ) | if . then "1" else "0" end' $
 export MQTT_CA_CERT="$(jq -r '.mqtt_ca_cert // empty' $OPTS)"
 export MQTT_CERTFILE="$(jq -r '.mqtt_certfile // empty' $OPTS)"
 export MQTT_KEYFILE="$(jq -r '.mqtt_keyfile // empty' $OPTS)"
-export MQTT_USERNAME="$(jq -r '.mqtt_user // empty' $OPTS)"
+export MQTT_USERNAME="$(jq -r '.mqtt_username // empty' $OPTS)"
 export MQTT_PASSWORD="$(jq -r '.mqtt_password // empty' $OPTS)"
 
 export TOPIC="$(jq -r '.topic // "zigbee2mqtt/#"' $OPTS)"
