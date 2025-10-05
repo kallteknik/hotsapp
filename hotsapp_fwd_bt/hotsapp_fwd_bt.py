@@ -154,8 +154,15 @@ def _post_measurement(event_payload: Dict[str, Any]) -> None:
         _log(f"[DRY_RUN] Would POST to {API_URL}: {json.dumps(body)[:600]}")
         return
 
+    #r = session.post(API_URL, headers=headers, json=body, timeout=15)
+    #r.raise_for_status()
     r = session.post(API_URL, headers=headers, json=body, timeout=15)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.HTTPError:
+        _log(f"[HTTP] {r.status_code} {r.reason}; resp: {r.text[:800]}")
+        raise
+
 
 # ---------- WebSocket loop ----------
 def _auth_and_subscribe(ws):
