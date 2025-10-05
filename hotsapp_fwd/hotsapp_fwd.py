@@ -92,6 +92,8 @@ def on_message(client, userdata, message):
             return
     # Debug-filter: tillåt endast en specifik sensor om satt
     print(DEBUG_ONLY_TOPIC)
+    print(topic.rsplit("/", 1)[-1])
+    print(topic)
     #if DEBUG_ONLY_TOPIC or DEBUG_ONLY_NAME:
      #   allow = False
       #  if DEBUG_ONLY_TOPIC:

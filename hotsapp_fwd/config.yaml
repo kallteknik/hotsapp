@@ -1,5 +1,5 @@
 name: Hotsapp Z2M REST Forwarder
-version: "1.0.1"
+version: "1.0.2"
 slug: hotsapp_fwd
 description: Forwards MQTT messages from Zigbee2MQTT to an HTTP API.
 arch:
