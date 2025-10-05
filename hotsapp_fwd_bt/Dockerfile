@@ -1,9 +1,9 @@
 FROM python:3.11-slim
-ARG BUILD_NOCACHE=manual_1_1_4
+ARG BUILD_NOCACHE=manual_0_0_1
 RUN apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY hotsapp_fwd.py .
+COPY hotsapp_fwd_bt.py .
 COPY run.sh /run.sh
 CMD ["/run.sh"]

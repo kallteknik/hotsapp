@@ -1,7 +1,7 @@
-name: Hotsapp Z2M REST Forwarder
-version: "1.1.4"
-slug: hotsapp_fwd
-description: Forwards MQTT messages from Zigbee2MQTT to an HTTP API.
+name: Hotsapp BT REST Forwarder
+version: "0.0.1"
+slug: hotsapp_fwd_bt
+description: Forwards Bluetooth messages to an HTTP API.
 arch:
   - aarch64
   - armv7
