@@ -8,6 +8,8 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import paho.mqtt.client as mqtt
 import json
+from time import monotonic
+_last = {}
 
 with open("/data/options.json") as f:
     o = json.load(f)
@@ -85,15 +87,17 @@ def on_message(client, userdata, message):
     topic = message.topic
     if EXCLUDE_BRIDGE and topic.startswith("zigbee2mqtt/bridge"):
         return
+    # Stoppa SET topics
+    if topic.endswith("/set"):
+        print("[FILTER] topic SET stopped")
+        return
     # Släpp retained en stund vid uppstart
     if message.retain and DROP_RETAINED_GRACE_SEC > 0:
         delta = (datetime.now(timezone.utc) - start_ts).total_seconds()
         if delta < DROP_RETAINED_GRACE_SEC:
             return
     # Debug-filter: tillåt endast en specifik sensor om satt
-    print(DEBUG_ONLY_NAME)
-    print(topic.rsplit("/", 1)[-1])
-    print(topic)
+
     if DEBUG_ONLY_TOPIC or DEBUG_ONLY_NAME:
         allow = False
         if DEBUG_ONLY_TOPIC:
@@ -102,7 +106,7 @@ def on_message(client, userdata, message):
             last_seg = topic.rsplit("/", 1)[-1]  # sista segmentet efter '/'
             allow = (last_seg == DEBUG_ONLY_NAME)
         if not allow:
-            print(f"[ERROR] Debug stop: {DEBUG_ONLY_NAME}", flush=True)
+            print(f"[DEBUG] Stopped not: {DEBUG_ONLY_NAME}", flush=True)
             return
 
 
@@ -111,6 +115,22 @@ def on_message(client, userdata, message):
         msg_obj = loads(raw)
     except JSONDecodeError:
         msg_obj = raw
+
+    
+    # Dubbel post filter 0.5 sek
+    body_json = json.dumps(msg_obj, sort_keys=True, separators=(",", ":"))
+    h = hash(body_json)
+    now = monotonic()
+    DEDUP_WINDOW = float(opt("dedup_window_sec", 0.5))  # gör konfigurerbart
+
+    prev = _last.get(topic)
+    if prev and prev[0] == h and (now - prev[1]) < DEDUP_WINDOW:
+        # identiskt innehåll kom strax innan -> droppa
+        print("[FILTER] Double post stopped")
+        return
+    _last[topic] = (h, now)
+    
+
 
     body = payload_for(topic, msg_obj, message.qos, message.retain)
 
