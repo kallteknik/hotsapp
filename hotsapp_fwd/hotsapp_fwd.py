@@ -91,6 +91,7 @@ def on_message(client, userdata, message):
         if delta < DROP_RETAINED_GRACE_SEC:
             return
     # Debug-filter: tillåt endast en specifik sensor om satt
+    print(DEBUG_ONLY_TOPIC)
     #if DEBUG_ONLY_TOPIC or DEBUG_ONLY_NAME:
      #   allow = False
       #  if DEBUG_ONLY_TOPIC:
