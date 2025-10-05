@@ -1,7 +1,7 @@
 name: Hotsapp BT REST Forwarder
-version: "0.0.1"
+version: "0.0.2"
 slug: hotsapp_fwd_bt
-description: Forwards Bluetooth messages to an HTTP API.
+description: Forwards Bluetooth advertisements from HA to an HTTP API.
 arch:
   - aarch64
   - armv7
@@ -10,29 +10,44 @@ init: false
 startup: services
 boot: auto
 host_network: true
+
+# Ger add-onen tillgång till Home Assistant Core API (inkl. WebSocket via proxy)
+homeassistant_api: true
+
+# Standardvärden (syns i UI och blir underlag för /data/options.json vid körning)
 options:
-  mqtt_host: "core-mosquitto"
-  mqtt_port: 1883
-  topic: "zigbee2mqtt/#"
-  exclude_bridge: true
-  drop_retained_grace_sec: 3
-  api_url: "https://account.hotsappcenter.com/api/api.php"
+  api_url: "https://api.exempel.se/measurements"
   api_token: ""
   dry_run: false
-  mqtt_username: "mqtt-user"
-  mqtt_password: "1234"
-  debug_only_topic: ""
-  debug_only_name: ""
+  retry_total: 5
+  retry_backoff: 1.0
+
+  bt_address: ""
+  bt_service_uuids: []
+  bt_manufacturer_ids: []
+  rssi_min: -999
+  include_connectable_only: false
+  dedup_window_sec: 0.5
+
+  client_name: "hotsapp_fwd_bt"
+  verbose: true
+
+# Valideringsschema för alternativen ovan
 schema:
-  mqtt_host: str
-  mqtt_port: int
-  topic: str
-  exclude_bridge: bool
-  drop_retained_grace_sec: int
   api_url: str
   api_token: str
   dry_run: bool
-  mqtt_username: str
-  mqtt_password: str
-  debug_only_topic: str
-  debug_only_name: str
+  retry_total: int
+  retry_backoff: float
+
+  bt_address: str
+  bt_service_uuids:
+    - str
+  bt_manufacturer_ids:
+    - int
+  rssi_min: int
+  include_connectable_only: bool
+  dedup_window_sec: float
+
+  client_name: str
+  verbose: bool

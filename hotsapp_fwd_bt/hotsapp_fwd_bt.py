@@ -1,207 +1,250 @@
-
 #!/usr/bin/env python3
-# Egen testkommentar2
-import os, json, ssl, sys
+# -*- coding: utf-8 -*-
+"""
+hotsapp_fwd_bt.py — HA WebSocket -> Bluetooth advertisements -> HTTP forward
+
+- Kopplar upp mot HA WebSocket via supervisor-proxy (ws://supervisor/core/websocket)
+- Autentiserar med SUPERVISOR_TOKEN
+- Abonnerar på bluetooth/subscribe_advertisements
+- Filtrerar/av-dedupar enligt options och forwardar utvalda datapunkter med HTTP POST
+
+Körs av run.sh
+"""
+
+import os
+import sys
+import json
+import time
+import ssl as _ssl
+import traceback
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
-import paho.mqtt.client as mqtt
-import json
-from time import monotonic
-_last = {}
+from websocket import create_connection, WebSocketConnectionClosedException
 
-import uuid, pathlib, json, os
+# ---------- Konfiguration från miljö och options.json ----------
+ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
+HA_WS_URL = os.getenv("HA_WS_URL", "ws://supervisor/core/websocket")
+SUPERVISOR_TOKEN = os.getenv("SUPERVISOR_TOKEN", "")
 
-HA_CORE_UUID_PATH = "/config/.storage/core.uuid"  # finns i HA
-ADDON_CLIENT_ID_PATH = "/data/client_id"         # vår egen fallback
-
-def get_client_id() -> str:
+def _read_options(path: str) -> Dict[str, Any]:
     try:
-        if os.path.exists(HA_CORE_UUID_PATH):
-            with open(HA_CORE_UUID_PATH, "r", encoding="utf-8") as f:
-                j = json.load(f)
-            ha_uuid = j.get("data", {}).get("uuid")
-            if ha_uuid:
-                return ha_uuid   # <-- ändrat här
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
-        pass
+        return {}
 
-    try:
-        p = pathlib.Path(ADDON_CLIENT_ID_PATH)
-        if p.exists():
-            return p.read_text(encoding="utf-8").strip()
-        new_id = str(uuid.uuid4())    # <-- ändrat här
-        p.write_text(new_id + "\n", encoding="utf-8")
-        return new_id
-    except Exception:
-        return str(uuid.uuid4())      # <-- ändrat här
+_options = _read_options(ADDON_OPTIONS_PATH)
 
-# >>> Skapa en global, återanvändbar klient-ID
-CLIENT_ID = get_client_id()
+def opt(name: str, default: Any = None) -> Any:
+    # options-nycklar kommer ofta i lowercase
+    return _options.get(name, default)
 
-
-
-with open("/data/options.json") as f:
-    o = json.load(f)
-def opt(name, default=None):
-    return o.get(name, default)
-
-
-def as_bool(v):
+def as_bool(v: Any) -> bool:
     if isinstance(v, bool):
         return v
-    return str(v).strip().lower() in {"1","true","yes","on"}
+    if v is None:
+        return False
+    return str(v).strip().lower() in {"1","true","yes","y","on"}
 
-# ---- opt()-varianter (lowercase nycklar i options.json) ----
-MQTT_HOST     = opt("mqtt_host", "core-mosquitto")
-MQTT_PORT     = int(opt("mqtt_port", 1883))
-MQTT_TLS      = as_bool(opt("mqtt_tls", "0"))
-MQTT_CA_CERT  = opt("mqtt_ca_cert")
-MQTT_CERTFILE = opt("mqtt_certfile")
-MQTT_KEYFILE  = opt("mqtt_keyfile")
-MQTT_USERNAME = opt("mqtt_username")
-MQTT_PASSWORD = opt("mqtt_password")
+# ---- HTTP-forward inställningar ----
+API_URL         = opt("api_url",  "https://api.exempel.se/measurements")
+API_TOKEN       = opt("api_token")
+DRY_RUN         = as_bool(opt("dry_run", "0"))
+RETRY_TOTAL     = int(opt("retry_total", 5))
+RETRY_BACKOFF   = float(opt("retry_backoff", 1.0))
 
-DEBUG_ONLY_TOPIC = opt("debug_only_topic", "")
-DEBUG_ONLY_NAME  = opt("debug_only_name", "")
+# ---- BT-filter/inställningar från options ----
+# Du kan ange en eller flera av dessa för att begränsa trafiken
+FILTER_ADDRESS          = opt("bt_address")                  # ex: "AA:BB:CC:DD:EE:FF"
+FILTER_SERVICE_UUIDS    = set(opt("bt_service_uuids", []) or [])   # lista av UUID-strängar
+FILTER_MANUFACTURER_IDS = set(opt("bt_manufacturer_ids", []) or [])# lista av int
+RSSI_MIN                = int(opt("rssi_min", -999))         # t.ex. -85
+INCLUDE_CONNECTABLE_ONLY= as_bool(opt("include_connectable_only", "0"))
+DEDUP_WINDOW_SEC        = float(opt("dedup_window_sec", 0.5)) # tidsfönster för av-dedup (per address)
 
-TOPIC                  = opt("topic", "zigbee2mqtt/#")
-EXCLUDE_BRIDGE         = as_bool(opt("exclude_bridge", "1"))
-DROP_RETAINED_GRACE_SEC= int(opt("drop_retained_grace_sec", 3))
+# ---- Övrigt ----
+CLIENT_NAME     = opt("client_name", "hotsapp_fwd_bt")
+VERBOSE         = as_bool(opt("verbose", "1"))
 
-API_URL   = opt("api_url", "https://api.exempel.se/measurements")
-API_TOKEN = opt("api_token")
-
-DRY_RUN = as_bool(opt("dry_run", "0"))
-raw     = opt("dry_run", "")
-RETRY_TOTAL   = int(opt("retry_total", 5))
-RETRY_BACKOFF = float(opt("retry_backoff", 1.0))
-
-
-start_ts = datetime.now(timezone.utc)
-
+# ---------- HTTP session med retries ----------
 session = requests.Session()
-retry = Retry(
-    total=RETRY_TOTAL,
-    backoff_factor=RETRY_BACKOFF,
-    status_forcelist=[429,500,502,503,504],
-    allowed_methods=["POST"]
+adapter = HTTPAdapter(
+    max_retries=Retry(
+        total=RETRY_TOTAL,
+        connect=RETRY_TOTAL,
+        read=RETRY_TOTAL,
+        backoff_factor=RETRY_BACKOFF,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=False,  # retry även på POST
+    )
 )
-adapter = HTTPAdapter(max_retries=retry)
 session.mount("http://", adapter)
 session.mount("https://", adapter)
 
-headers = {"Content-Type":"application/json"}
-headers["X-Client-Id"] = CLIENT_ID
+# ---------- Hjälpare ----------
+_last_sent_ts: Dict[str, float] = {}  # per address för dedup-fönster
 
-if API_TOKEN:
-    headers["Authorization"] = f"Bearer {API_TOKEN}"
+def _log(msg: str) -> None:
+    print(msg, flush=True)
 
-def to_iso_z(dt):
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00","Z")
+def _should_forward(evt: Dict[str, Any]) -> bool:
+    """
+    Event-struktur (enligt HA WebSocket BT-annonser):
+    {
+      "id": <int>, "type": "event", "event": {
+        "address": "AA:BB:..", "rssi": -60, "connectable": true/false,
+        "manufacturer_data": {"76": "base64..." }  # eller dict<int, bytes> beroende på serialisering
+        "service_data": { "uuid": "base64..." },
+        "service_uuids": ["uuid1", "uuid2"],
+        "tx_power": -4, "time": "ISO8601" ...
+      }
+    }
+    """
+    e = evt.get("event") or {}
+    addr = (e.get("address") or "").upper()
+    rssi = int(e.get("rssi") or -999)
+    connectable = bool(e.get("connectable"))
 
-def payload_for(topic, msg_obj, qos, retain):
-    return {
-        "topic": topic,
-        "message": msg_obj,
-        "received_at": to_iso_z(datetime.now(timezone.utc)),
-        "qos": qos,
-        "retain": retain
+    if FILTER_ADDRESS and addr != FILTER_ADDRESS.upper():
+        return False
+    if INCLUDE_CONNECTABLE_ONLY and not connectable:
+        return False
+    if rssi < RSSI_MIN:
+        return False
+
+    # service_uuids
+    if FILTER_SERVICE_UUIDS:
+        su = set((e.get("service_uuids") or []))
+        if not (su & FILTER_SERVICE_UUIDS):
+            return False
+
+    # manufacturer ids
+    if FILTER_MANUFACTURER_IDS:
+        md = e.get("manufacturer_data") or {}
+        # nyare HA serialiserar nycklar som str, äldre som int — hantera båda
+        m_ids = {int(k) for k in md.keys()} if md else set()
+        if not (m_ids & FILTER_MANUFACTURER_IDS):
+            return False
+
+    # dedup per address
+    now = time.monotonic()
+    last = _last_sent_ts.get(addr, 0)
+    if now - last < DEDUP_WINDOW_SEC:
+        return False
+    _last_sent_ts[addr] = now
+    return True
+
+def _post_measurement(event_payload: Dict[str, Any]) -> None:
+    headers = {"Content-Type": "application/json"}
+    if API_TOKEN:
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
+
+    body = {
+        "source": "ha_bt",
+        "client": CLIENT_NAME,
+        "received_utc": datetime.now(timezone.utc).isoformat(),
+        "data": event_payload,
     }
 
-def on_connect(client, userdata, flags, reason_code, properties=None):
-    print(f"[INFO] Connected to MQTT ({MQTT_HOST}:{MQTT_PORT}) rc={reason_code}", flush=True)
-    client.subscribe(TOPIC, qos=0)
-    print(f"[INFO] Subscribed to: {TOPIC}", flush=True)
-
-def on_message(client, userdata, message):
-    from json import loads, JSONDecodeError
-    topic = message.topic
-    if EXCLUDE_BRIDGE and topic.startswith("zigbee2mqtt/bridge"):
-        return
-    # Stoppa SET topics
-    if topic.endswith("/set"):
-        print("[FILTER] topic SET stopped")
-        return
-    # Släpp retained en stund vid uppstart
-    if message.retain and DROP_RETAINED_GRACE_SEC > 0:
-        delta = (datetime.now(timezone.utc) - start_ts).total_seconds()
-        if delta < DROP_RETAINED_GRACE_SEC:
-            return
-    # Debug-filter: tillåt endast en specifik sensor om satt
-
-    if DEBUG_ONLY_TOPIC or DEBUG_ONLY_NAME:
-        allow = False
-        if DEBUG_ONLY_TOPIC:
-            allow = (topic == DEBUG_ONLY_TOPIC)  # exakt topic-match
-        if not allow and DEBUG_ONLY_NAME:
-            last_seg = topic.rsplit("/", 1)[-1]  # sista segmentet efter '/'
-            allow = (last_seg == DEBUG_ONLY_NAME)
-        if not allow:
-            print(f"[DEBUG] Stopped not: {DEBUG_ONLY_NAME}", flush=True)
-            return
-
-
-    raw = message.payload.decode("utf-8", errors="replace")
-    try:
-        msg_obj = loads(raw)
-    except JSONDecodeError:
-        msg_obj = raw
-
-    
-    # Dubbel post filter 0.5 sek
-    body_json = json.dumps(msg_obj, sort_keys=True, separators=(",", ":"))
-    h = hash(body_json)
-    now = monotonic()
-    DEDUP_WINDOW = float(opt("dedup_window_sec", 0.5))  # gör konfigurerbart
-
-    prev = _last.get(topic)
-    if prev and prev[0] == h and (now - prev[1]) < DEDUP_WINDOW:
-        # identiskt innehåll kom strax innan -> droppa
-        print("[FILTER] Double post stopped")
-        return
-    _last[topic] = (h, now)
-    
-
-
-    body = payload_for(topic, msg_obj, message.qos, message.retain)
-
     if DRY_RUN:
-        print(f"[DRY_RUN] Would POST to {API_URL}: {json.dumps(body)[:500]}", flush=True)
+        _log(f"[DRY_RUN] Would POST to {API_URL}: {json.dumps(body)[:600]}")
         return
-    try:
-        #BORT r = session.post(API_URL, headers=headers, data=json.dumps(body), timeout=15)
-        r = session.post(API_URL, headers=headers, json=body, timeout=15)
-        if r.status_code >= 300:
-            print(f"[WARN] HTTP {r.status_code}: {r.text[:300]}", flush=True)
-        else:
-            print(f"[OK] Posted {topic}", flush=True)
-    except Exception as e:
-        print(f"[ERROR] POST failed: {e}", flush=True)
 
-def build_mqtt():
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    if MQTT_USERNAME:
-        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-    if MQTT_TLS:
-        import ssl as _ssl
-        ctx = _ssl.create_default_context(cafile=MQTT_CA_CERT) if MQTT_CA_CERT else _ssl.create_default_context()
-        if MQTT_CERTFILE and MQTT_KEYFILE:
-            ctx.load_cert_chain(MQTT_CERTFILE, MQTT_KEYFILE)
-        client.tls_set_context(ctx)
-    client.on_connect = on_connect
-    client.on_message = on_message
-    return client
+    r = session.post(API_URL, headers=headers, json=body, timeout=15)
+    r.raise_for_status()
+
+# ---------- WebSocket loop ----------
+def _auth_and_subscribe(ws):
+    # 1) server skickar auth_required
+    msg = json.loads(ws.recv())
+    if VERBOSE:
+        _log(f"[WS] <- {msg.get('type')}")
+
+    if msg.get("type") != "auth_required":
+        raise RuntimeError("Expected auth_required from HA WebSocket")
+
+    # 2) skicka auth
+    if not SUPERVISOR_TOKEN:
+        raise RuntimeError("SUPERVISOR_TOKEN saknas (krävs i add-ons).")
+
+    ws.send(json.dumps({"type": "auth", "access_token": SUPERVISOR_TOKEN}))
+    msg = json.loads(ws.recv())
+    if msg.get("type") != "auth_ok":
+        raise RuntimeError(f"Auth failed: {msg}")
+
+    if VERBOSE:
+        _log("[WS] Auth OK")
+
+    # 3) subscribe till Bluetooth-annonser
+    #    (WebSocket-kommando 'bluetooth/subscribe_advertisements')
+    #    Filtren skickas inte här — vi filtrerar lokalt för maximal flexibilitet.
+    sub = {"id": 1, "type": "bluetooth/subscribe_advertisements"}
+    ws.send(json.dumps(sub))
+    if VERBOSE:
+        _log("[WS] -> bluetooth/subscribe_advertisements skickad")
+
+def _event_loop(ws):
+    while True:
+        raw = ws.recv()
+        msg = json.loads(raw)
+
+        # HA håller ibland igång PING/PONG via ram—websocket-client hanterar det transparent.
+        # Vi bryr oss huvudsakligen om "event"-typer från vår subscription.
+        if msg.get("type") == "event" and "event" in msg:
+            if _should_forward(msg):
+                # Plocka ut fält vi bryr oss om
+                e = msg["event"]
+                payload = {
+                    "address": e.get("address"),
+                    "rssi": e.get("rssi"),
+                    "tx_power": e.get("tx_power"),
+                    "connectable": e.get("connectable"),
+                    "service_uuids": e.get("service_uuids"),
+                    "manufacturer_data": e.get("manufacturer_data"),
+                    "service_data": e.get("service_data"),
+                    "time": e.get("time"),
+                }
+                try:
+                    _post_measurement(payload)
+                except Exception as ex:
+                    _log(f"[HTTP] POST failed: {ex}")
+        else:
+            # övriga meddelanden (resultat, pong, etc) – logga sparsamt
+            if VERBOSE and msg.get("type") not in ("result", "pong"):
+                _log(f"[WS] other: {msg.get('type')}")
 
 def main():
-    client = build_mqtt()
-    try:
-        client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
-    except Exception as e:
-        print(f"[FATAL] MQTT connect failed: {e}", file=sys.stderr, flush=True)
-        sys.exit(1)
-    client.loop_forever()
+    # Reconnect-loop
+    backoff = 1.0
+    while True:
+        try:
+            # OBS: i add-ons fungerar ws://supervisor/core/websocket utan extra cert-hantering
+            ws = create_connection(
+                HA_WS_URL,
+                header=[f"Authorization: Bearer {SUPERVISOR_TOKEN}"],
+                sslopt={"cert_reqs": _ssl.CERT_NONE},  # proxy är lokalt; undvik cert-stök
+                timeout=30,
+            )
+            _log(f"[WS] Connected to {HA_WS_URL}")
+            _auth_and_subscribe(ws)
+            backoff = 1.0  # reset backoff efter lyckad auth
+            _event_loop(ws)
+        except (WebSocketConnectionClosedException, ConnectionError) as e:
+            _log(f"[WS] connection dropped: {e}")
+        except Exception as e:
+            _log(f"[WS] error: {e}\n{traceback.format_exc()}")
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+            # Exponentiell backoff vid reconnect
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30)
 
 if __name__ == "__main__":
     main()
