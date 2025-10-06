@@ -24,8 +24,7 @@ import pathlib
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
-from websocket import create_connection, WebSocketConnectionClosedException
-
+from websocket import create_connection, WebSocketConnectionClosedException, WebSocketTimeoutException
 
 
 
@@ -398,56 +397,78 @@ def _auth_and_subscribe(ws):
     if VERBOSE:
         _log("[WS] -> bluetooth/subscribe_advertisements skickad")
 
+
+# --- Hårdkodat sändintervall & buffer ---
+SEND_INTERVAL_SEC = 5.0  # skicka var 5:e sekund, hårdkodat
+
+_latest_by_addr: Dict[str, Dict[str, Any]] = {}  # senaste e_norm per MAC
+
+def _flush_pending() -> None:
+    """Skicka senaste observation per MAC och töm bufferten."""
+    if not _latest_by_addr:
+        return
+    items = list(_latest_by_addr.items())
+    for addr, e_norm in items:
+        try:
+            _post_measurement(e_norm)
+        except Exception as ex:
+            _log(f"[HTTP] POST failed: {ex}")
+    _latest_by_addr.clear()
+    _log(f"[AGG] Flushed {len(items)} events")
+
+
+    
 def _event_loop(ws):
+    # Gör recv icke-blockerande länge nog så vi kan flusha periodiskt
+    try:
+        ws.settimeout(1.0)  # 1 s polling för att kunna flusha var 5 s
+    except Exception:
+        pass
+
+    last_flush = time.monotonic()
+
     while True:
-        raw = ws.recv()
-        msg = json.loads(raw)
+        try:
+            raw = ws.recv()
+            msg = json.loads(raw)
 
-        if msg.get("type") == "event" and "event" in msg:
-            ev = msg["event"] or {}
+            if msg.get("type") == "event" and "event" in msg:
+                ev = msg["event"] or {}
 
-            # Ny form: listor under add/update/remove
-            if any(isinstance(ev.get(k), list) for k in ("add", "update", "remove")):
-                # Vi postar för add och update; remove hoppar vi över
-                for kind in ("add", "update"):
-                    recs = ev.get(kind) or []
-                    for rec in recs:
-                        e_norm = _normalize_adv(rec)
+                # Ny form: listor under add/update/remove
+                if any(isinstance(ev.get(k), list) for k in ("add", "update", "remove")):
+                    for kind in ("add", "update"):
+                        recs = ev.get(kind) or []
+                        for rec in recs:
+                            e_norm = _normalize_adv(rec)
+                            addr = (e_norm.get("address") or "").upper()
+                            if not addr:
+                                continue
+                            _latest_by_addr[addr] = e_norm
+                else:
+                    # Fallback: äldre/singel event-format
+                    e = ev or {}
+                    if "address" not in e and isinstance(e.get("data"), dict):
+                        e = e["data"]
+                    e_norm = _normalize_adv(e)
+                    addr = (e_norm.get("address") or "").upper()
+                    if addr:
+                        _latest_by_addr[addr] = e_norm
 
-                        if VERBOSE and not e_norm.get("address") and e_norm.get("rssi") is None:
-                            _log(f"[WS] Oväntad annons-post, visar rå en gång:\n{json.dumps(rec, ensure_ascii=False)[:1200]}")
+        except WebSocketTimeoutException:
+            # ingen data just nu → gå vidare till flush-kontroll
+            pass
 
-                        if _should_forward({"event": e_norm}):
-                            try:
-                                _post_measurement(e_norm)
-                            except Exception as ex:
-                                _log(f"[HTTP] POST failed: {ex}")
+        # Flush var 5:e sekund (hårdkodat)
+        now = time.monotonic()
+        if now - last_flush >= SEND_INTERVAL_SEC:
+            _flush_pending()
+            last_flush = now
 
-                # (valfritt) logga antal för felsökning
-                if VERBOSE:
-                    n_add = len(ev.get("add") or [])
-                    n_upd = len(ev.get("update") or [])
-                    n_rem = len(ev.get("remove") or [])
-                    _log(f"[WS] batch: add={n_add} update={n_upd} remove={n_rem}")
 
-            else:
-                # Fallback: äldre/singel event-format
-                e = ev or {}
-                if "address" not in e and isinstance(e.get("data"), dict):
-                    e = e["data"]
 
-                e_norm = _normalize_adv(e)
 
-                if VERBOSE and not e_norm.get("address") and e_norm.get("rssi") is None:
-                    _log(f"[WS] Oväntad event-form, visar rå en gång:\n{json.dumps(msg, ensure_ascii=False)[:1200]}")
 
-                if _should_forward({"event": e_norm}):
-                    try:
-                        _post_measurement(e_norm)
-                    except Exception as ex:
-                        _log(f"[HTTP] POST failed: {ex}")
-
-                        
 
 def main():
     # Reconnect-loop
