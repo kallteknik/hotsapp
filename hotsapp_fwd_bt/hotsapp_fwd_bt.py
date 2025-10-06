@@ -12,7 +12,6 @@ Körs av run.sh
 """
 
 import os
-import sys
 import json
 import time
 import ssl as _ssl
@@ -143,7 +142,7 @@ adapter = HTTPAdapter(
         read=RETRY_TOTAL,
         backoff_factor=RETRY_BACKOFF,
         status_forcelist=(500, 502, 503, 504),
-        allowed_methods=False,  # retry även på POST
+        allowed_methods=None,   # retry även på POST (alla metoder)
     )
 )
 session.mount("http://", adapter)
@@ -169,6 +168,8 @@ def _should_forward(evt: Dict[str, Any]) -> bool:
     """
     e = evt.get("event") or {}
     addr = (e.get("address") or "").upper()
+    if not addr:
+        return False
     rssi = int(e.get("rssi") or -999)
     connectable = bool(e.get("connectable"))
 
@@ -222,6 +223,7 @@ def _post_measurement(event_payload: Dict[str, Any]) -> None:
         return
 
     try:
+        _log(f"[HTTP] POST {API_URL} with x-client-id={CLIENT_ID}")
         r = session.post(API_URL, headers=headers, json=body, timeout=15)
     except Exception as ex:
         _log(f"[HTTP] request error before response: {ex}")
@@ -242,18 +244,18 @@ def _post_measurement(event_payload: Dict[str, Any]) -> None:
 
 
 # --- ThermoBeacon decoder (manufacturer_data id 16/17) ---
-def _le_u16(buf: bytes, off: int) -> Optional[int]:
-    return int.from_bytes(buf[off:off+2], "little") if off+2 <= len(buf) else None
+def _le_u16(buf: bytes, off: int) -> int | None:
+    return int.from_bytes(buf[off:off+2], "little") if off + 2 <= len(buf) else None
 
-def _le_s16(buf: bytes, off: int) -> Optional[int]:
-    if off+2 > len(buf):
+def _le_s16(buf: bytes, off: int) -> int | None:
+    if off + 2 > len(buf):
         return None
     v = int.from_bytes(buf[off:off+2], "little", signed=False)
     if v >= 0x8000:
         v -= 0x10000
     return v
 
-def _md_payload(md: Any, company_id: int) -> Optional[bytes]:
+def _md_payload(md: Any, company_id: int) -> bytes | None:
     """HA ger manufacturer_data som {company_id(int/str): bytes/hexstr}."""
     if not md:
         return None
@@ -272,8 +274,10 @@ def _md_payload(md: Any, company_id: int) -> Optional[bytes]:
                 return None
     return None
 
+
+
 # Decode temperatur
-def _decode_thermobeacon(manufacturer_data: Any, address: str) -> Optional[Dict[str, Any]]:
+def _decode_thermobeacon(manufacturer_data: Any, address: str) -> dict[str, Any] | None:
     # Prova company id 16 (0x0010) och 17 (0x0011)
     payload = _md_payload(manufacturer_data, 16) or _md_payload(manufacturer_data, 17)
     if not payload or len(payload) < 12:
@@ -347,24 +351,22 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     tstamp = e.get("time") or e.get("timestamp")
 
     out = {
-            "name": name,
-            "address": address,
-            "rssi": rssi,
-            "tx_power": tx_power,
-            "connectable": connectable,
-            "service_uuids": service_uuids,
-            "manufacturer_data": manufacturer_data,
-            "service_data": service_data,
-            "time": tstamp,
-        }
+        "name": name,
+        "address": address,
+        "rssi": rssi,
+        "tx_power": tx_power,
+        "connectable": connectable,
+        "service_uuids": service_uuids,
+        "manufacturer_data": manufacturer_data,
+        "service_data": service_data,
+        "time": tstamp,
+    }
 
-        # Försök tolka ThermoBeacon och lägg till nycklar om vi hittar något
+    # Försök tolka ThermoBeacon och lägg till nycklar om vi hittar något
     extra = _decode_thermobeacon(manufacturer_data, address)
     if extra:
         out.update(extra)
-        return out
-
-
+    return out
 
 # ---------- WebSocket loop ----------
 def _auth_and_subscribe(ws):
