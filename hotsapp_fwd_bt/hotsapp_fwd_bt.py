@@ -156,15 +156,30 @@ def _md_payload(md: Any, company_id: int) -> bytes | None:
                 return None
     return None
 
+
+
+
 def _decode_thermobeacon(manufacturer_data: Any, address: str) -> dict[str, Any] | None:
     """
-    Tolerant dekoder: prova offsets runt ankare (omvänd MAC) samt 0/2.
-    Acceptera temp ensam om den är rimlig; fukt/batteri med om rimliga.
+    Tolerant dekoder för ThermoBeacon (company id 16/17) som:
+    - testar flera offsets (ankare: omvänd MAC; ±2; samt 0 och 2),
+    - accepterar temperatur ensam om den är rimlig,
+    - väger in kontinuitet mot senast känd temperatur för samma MAC.
     """
     payload = _md_payload(manufacturer_data, 16) or _md_payload(manufacturer_data, 17)
     if not payload or len(payload) < 6:
         return None
 
+    # Föregående temp (om vi har skickat något för denna MAC tidigare)
+    prev_t = None
+    try:
+        prev_t = (_last_temp_by_addr.get(address, {}) or {}).get("temperature_c")
+        if prev_t is not None:
+            prev_t = float(prev_t)
+    except Exception:
+        prev_t = None
+
+    # Hitta ankare: omvänd MAC i payload, annars fallback
     mac_rev = b""
     if address:
         try:
@@ -181,42 +196,66 @@ def _decode_thermobeacon(manufacturer_data: Any, address: str) -> dict[str, Any]
     best: dict[str, Any] | None = None
     best_score = -1
 
-    def score(off: int) -> tuple[int, dict[str, Any] | None]:
+    def parse_at(off: int) -> tuple[int, dict[str, Any] | None]:
         if off < 0 or off + 6 > len(payload):
             return -1, None
         batt_raw = _le_u16(payload, off)
         t_raw    = _le_s16(payload, off + 2)
         h_raw    = _le_u16(payload, off + 4)
+
         cand: dict[str, Any] = {}
-        s = 0
+        score = 0
+
+        # Temperatur
+        temp_ok = False
         if t_raw is not None:
             temp_c = t_raw / 16.0
             if -40.0 <= temp_c <= 85.0:
-                cand["temperature_c"] = round(temp_c, 2); s += 1
+                temp_ok = True
+                temp_c = round(temp_c, 2)
+                cand["temperature_c"] = temp_c
+                score += 10  # temperatur väger tyngst
+
+                # Kontinuitet mot föregående temp (om finns)
+                if prev_t is not None:
+                    delta = abs(temp_c - prev_t)
+                    if   delta <= 0.5:  score += 5
+                    elif delta <= 2.0:  score += 3
+                    elif delta >= 8.0:  score -= 6  # stora hopp → misstro
+
+        # Luftfuktighet (sekundär)
         if h_raw is not None:
             hum = h_raw / 16.0
             if 0.0 <= hum <= 100.0:
-                cand["humidity_percent"] = round(hum, 2); s += 1
+                cand["humidity_percent"] = round(hum, 2)
+                score += 1
+
+        # Batteri (sekundär)
         if batt_raw is not None:
             batt_mv = batt_raw if batt_raw > 1000 else batt_raw * 10
             batt_v  = batt_mv / 1000.0
             if 2.0 <= batt_v <= 4.5:
                 cand["battery_v"] = round(batt_v, 3)
                 cand["battery_mv"] = int(batt_mv)
-                s += 1
-        return s, (cand if s > 0 else None)
+                score += 1
+
+        # Vi kräver åtminstone en rimlig temp
+        return (score, cand) if temp_ok else (-1, None)
 
     seen: set[int] = set()
     for off in candidates:
         if off in seen:
             continue
         seen.add(off)
-        s, cand = score(off)
+        s, cand = parse_at(off)
         if s > best_score and cand:
             best_score = s
             best = cand
 
     return best
+
+
+
 
 def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     """Normalisera en annons-post från HA (stöd för olika fältvarianter)."""
