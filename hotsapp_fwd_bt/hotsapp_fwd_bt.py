@@ -241,6 +241,89 @@ def _post_measurement(event_payload: Dict[str, Any]) -> None:
 
 
 
+# --- ThermoBeacon decoder (manufacturer_data id 16/17) ---
+def _le_u16(buf: bytes, off: int) -> Optional[int]:
+    return int.from_bytes(buf[off:off+2], "little") if off+2 <= len(buf) else None
+
+def _le_s16(buf: bytes, off: int) -> Optional[int]:
+    if off+2 > len(buf):
+        return None
+    v = int.from_bytes(buf[off:off+2], "little", signed=False)
+    if v >= 0x8000:
+        v -= 0x10000
+    return v
+
+def _md_payload(md: Any, company_id: int) -> Optional[bytes]:
+    """HA ger manufacturer_data som {company_id(int/str): bytes/hexstr}."""
+    if not md:
+        return None
+    for k, v in md.items():
+        try:
+            if int(k) != company_id:
+                continue
+        except Exception:
+            continue
+        if isinstance(v, (bytes, bytearray)):
+            return bytes(v)
+        if isinstance(v, str):
+            try:
+                return bytes.fromhex(v)
+            except Exception:
+                return None
+    return None
+
+# Decode temperatur
+def _decode_thermobeacon(manufacturer_data: Any, address: str) -> Optional[Dict[str, Any]]:
+    # Prova company id 16 (0x0010) och 17 (0x0011)
+    payload = _md_payload(manufacturer_data, 16) or _md_payload(manufacturer_data, 17)
+    if not payload or len(payload) < 12:
+        return None
+
+    mac_rev = b""
+    if address:
+        try:
+            mac_rev = bytes.fromhex(address.replace(":", ""))[::-1]
+        except Exception:
+            pass
+
+    # Ankare: positionen precis efter omvänd MAC om den finns, annars 0/2 som fallback
+    candidates = []
+    if mac_rev and mac_rev in payload:
+        base = payload.index(mac_rev) + len(mac_rev)
+        candidates += [base, base-2, base+2]
+    candidates += [0, 2]
+    tried = set()
+
+    for off in candidates:
+        if off in tried or off < 0 or off+6 > len(payload):
+            continue
+        tried.add(off)
+        batt_raw = _le_u16(payload, off)
+        t_raw    = _le_s16(payload, off+2)
+        h_raw    = _le_u16(payload, off+4)
+        if batt_raw is None or t_raw is None or h_raw is None:
+            continue
+
+        temp_c = t_raw / 16.0
+        hum    = h_raw / 16.0
+        # Batteri: vissa varianter kodar i mV (t.ex. 2856), andra i 0.01V (t.ex. 373 => 3.73V)
+        batt_mv = batt_raw if batt_raw > 1000 else batt_raw * 10
+        batt_v  = batt_mv / 1000.0
+
+        # Rimlighetskontroll
+        if -40.0 <= temp_c <= 85.0 and 0.0 <= hum <= 100.0 and 2.0 <= batt_v <= 4.5:
+            return {
+                "temperature_c": round(temp_c, 2),
+                "humidity_percent": round(hum, 2),
+                "battery_v": round(batt_v, 3),
+                "battery_mv": int(batt_mv),
+            }
+
+    return None
+
+
+
+
 def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     """Normalisera en annons-post från HA (stöd för olika fältvarianter)."""
     device = e.get("device") or {}
@@ -263,17 +346,25 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     service_data = e.get("service_data") or e.get("serviceData")
     tstamp = e.get("time") or e.get("timestamp")
 
-    return {
-        "name": name,
-        "address": address,
-        "rssi": rssi,
-        "tx_power": tx_power,
-        "connectable": connectable,
-        "service_uuids": service_uuids,
-        "manufacturer_data": manufacturer_data,
-        "service_data": service_data,
-        "time": tstamp,
-    }
+    out = {
+            "name": name,
+            "address": address,
+            "rssi": rssi,
+            "tx_power": tx_power,
+            "connectable": connectable,
+            "service_uuids": service_uuids,
+            "manufacturer_data": manufacturer_data,
+            "service_data": service_data,
+            "time": tstamp,
+        }
+
+        # Försök tolka ThermoBeacon och lägg till nycklar om vi hittar något
+    extra = _decode_thermobeacon(manufacturer_data, address)
+    if extra:
+        out.update(extra)
+        return out
+
+
 
 # ---------- WebSocket loop ----------
 def _auth_and_subscribe(ws):
