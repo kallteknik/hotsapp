@@ -29,7 +29,6 @@ from websocket import create_connection, WebSocketConnectionClosedException, Web
 
 
 
-
 # ---------- Konfiguration från miljö och options.json ----------
 ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
 HA_WS_URL = os.getenv("HA_WS_URL", "ws://supervisor/core/websocket")
@@ -130,6 +129,31 @@ def get_client_id() -> str:
 
 CLIENT_ID = get_client_id()
 
+
+SEND_INTERVAL_SEC = 5.0  # hårdkodat: skicka var 5:e sekund
+
+_last_temp_by_addr: Dict[str, Dict[str, Any]] = {}  # {"MAC": {"temperature_c": float, "time_iso": str}}
+
+def _flush_pending() -> None:
+    """Skicka senaste kända temperatur per MAC i EN batch och behåll state (så vi skickar även om temp ej ändrats)."""
+    if not _last_temp_by_addr:
+        return
+    events = []
+    for addr, st in _last_temp_by_addr.items():
+        t = st.get("temperature_c")
+        if t is None:
+            continue
+        events.append({
+            "address": addr,
+            "temperature_c": float(t),
+            "time_iso": st.get("time_iso") or datetime.now(timezone.utc).isoformat(),
+        })
+    if not events:
+        return
+    try:
+        _post_batch(events)
+    except Exception as ex:
+        _log(f"[HTTP] POST failed: {ex}")
 
 
 # ---------- HTTP session med retries ----------
@@ -242,6 +266,40 @@ def _post_measurement(event_payload: Dict[str, Any]) -> None:
 
 
 
+def _post_batch(events: list[Dict[str, Any]]) -> None:
+    # Endast temperaturer i data-listan
+    headers = {
+        "Content-Type": "application/json",
+        "x-client-id": CLIENT_ID,
+    }
+    if API_TOKEN:
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
+
+    body = {
+        "source": "ha_bt",
+        "client": CLIENT_NAME,
+        "received_utc": datetime.now(timezone.utc).isoformat(),
+        "data": events,  # t.ex. [{"address": "...", "temperature_c": 23.5, "time_iso": "..."}]
+    }
+
+    if DRY_RUN:
+        _log(f"[DRY_RUN] Would POST (batch={len(events)}) to {API_URL}: {json.dumps(body)[:600]}")
+        return
+
+    r = session.post(API_URL, headers=headers, json=body, timeout=15)
+    ct = r.headers.get("Content-Type", "")
+    snippet = (r.text or "")[:800]
+    if r.ok:
+        _log(f"[HTTP] OK {r.status_code} ({ct}) batch={len(events)}")
+        if snippet.strip():
+            _log(f"[HTTP] resp: {snippet}")
+    else:
+        _log(f"[HTTP] ERR {r.status_code} {r.reason} ({ct}); resp: {snippet}")
+        r.raise_for_status()
+
+
+
+
 # --- ThermoBeacon decoder (manufacturer_data id 16/17) ---
 def _le_u16(buf: bytes, off: int) -> int | None:
     return int.from_bytes(buf[off:off+2], "little") if off + 2 <= len(buf) else None
@@ -349,6 +407,14 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     service_data = e.get("service_data") or e.get("serviceData")
     tstamp = e.get("time") or e.get("timestamp")
 
+    # ISO-tid om vi fick epoch
+    time_iso = None
+    try:
+        if isinstance(tstamp, (int, float)):
+            time_iso = datetime.fromtimestamp(tstamp, tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+
     out = {
         "name": name,
         "address": address,
@@ -359,13 +425,14 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
         "manufacturer_data": manufacturer_data,
         "service_data": service_data,
         "time": tstamp,
+        "time_iso": time_iso,
     }
 
-    # Försök tolka ThermoBeacon och lägg till nycklar om vi hittar något
     extra = _decode_thermobeacon(manufacturer_data, address)
     if extra:
         out.update(extra)
     return out
+
 
 # ---------- WebSocket loop ----------
 def _auth_and_subscribe(ws):
@@ -419,9 +486,9 @@ def _flush_pending() -> None:
 
     
 def _event_loop(ws):
-    # Gör recv icke-blockerande länge nog så vi kan flusha periodiskt
+    # Timeout så vi kan flusha periodiskt
     try:
-        ws.settimeout(1.0)  # 1 s polling för att kunna flusha var 5 s
+        ws.settimeout(1.0)
     except Exception:
         pass
 
@@ -435,28 +502,35 @@ def _event_loop(ws):
             if msg.get("type") == "event" and "event" in msg:
                 ev = msg["event"] or {}
 
-                # Ny form: listor under add/update/remove
+                # Batch-listor
                 if any(isinstance(ev.get(k), list) for k in ("add", "update", "remove")):
                     for kind in ("add", "update"):
-                        recs = ev.get(kind) or []
-                        for rec in recs:
+                        for rec in (ev.get(kind) or []):
                             e_norm = _normalize_adv(rec)
                             addr = (e_norm.get("address") or "").upper()
                             if not addr:
                                 continue
-                            _latest_by_addr[addr] = e_norm
+                            # Spara endast om vi har temperatur
+                            if "temperature_c" in e_norm and e_norm["temperature_c"] is not None:
+                                _last_temp_by_addr[addr] = {
+                                    "temperature_c": e_norm["temperature_c"],
+                                    "time_iso": e_norm.get("time_iso"),
+                                }
                 else:
-                    # Fallback: äldre/singel event-format
+                    # Singel-event
                     e = ev or {}
                     if "address" not in e and isinstance(e.get("data"), dict):
                         e = e["data"]
                     e_norm = _normalize_adv(e)
                     addr = (e_norm.get("address") or "").upper()
-                    if addr:
-                        _latest_by_addr[addr] = e_norm
+                    if addr and ("temperature_c" in e_norm) and (e_norm["temperature_c"] is not None):
+                        _last_temp_by_addr[addr] = {
+                            "temperature_c": e_norm["temperature_c"],
+                            "time_iso": e_norm.get("time_iso"),
+                        }
 
         except WebSocketTimeoutException:
-            # ingen data just nu → gå vidare till flush-kontroll
+            # tyst; vi använder detta fönster för att kolla flush
             pass
 
         # Flush var 5:e sekund (hårdkodat)
@@ -464,6 +538,7 @@ def _event_loop(ws):
         if now - last_flush >= SEND_INTERVAL_SEC:
             _flush_pending()
             last_flush = now
+
 
 
 
