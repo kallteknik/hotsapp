@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-hotsapp_fwd_bt.py — HA WebSocket -> Bluetooth advertisements -> HTTP forward
+hotsapp_fwd_bt.py — HA WebSocket -> Bluetooth advertisements -> HTTP forward (temperaturer var 5 s)
 
 - Kopplar upp mot HA WebSocket via supervisor-proxy (ws://supervisor/core/websocket)
 - Autentiserar med SUPERVISOR_TOKEN
 - Abonnerar på bluetooth/subscribe_advertisements
-- Filtrerar/av-dedupar enligt options och forwardar utvalda datapunkter med HTTP POST
+- Dekodar ThermoBeacon temperatur
+- Samlar senaste temperatur per MAC och skickar i EN batch var 5:e sekund
 
 Körs av run.sh
 """
@@ -18,16 +19,11 @@ import ssl as _ssl
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict
-import uuid
-import pathlib
 
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from websocket import create_connection, WebSocketConnectionClosedException, WebSocketTimeoutException
-
-
-
 
 # ---------- Konfiguration från miljö och options.json ----------
 ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
@@ -54,6 +50,9 @@ def as_bool(v: Any) -> bool:
         return False
     return str(v).strip().lower() in {"1","true","yes","y","on"}
 
+def _log(msg: str) -> None:
+    print(msg, flush=True)
+
 # ---- HTTP-forward inställningar ----
 API_URL         = opt("api_url",  "https://api.exempel.se/measurements")
 API_TOKEN       = opt("api_token")
@@ -61,29 +60,14 @@ DRY_RUN         = as_bool(opt("dry_run", "0"))
 RETRY_TOTAL     = int(opt("retry_total", 5))
 RETRY_BACKOFF   = float(opt("retry_backoff", 1.0))
 
-# ---- BT-filter/inställningar från options ----
-# Du kan ange en eller flera av dessa för att begränsa trafiken
-FILTER_ADDRESS          = opt("bt_address")                  # ex: "AA:BB:CC:DD:EE:FF"
-FILTER_SERVICE_UUIDS    = set(opt("bt_service_uuids", []) or [])   # lista av UUID-strängar
-FILTER_MANUFACTURER_IDS = set(opt("bt_manufacturer_ids", []) or [])# lista av int
-RSSI_MIN                = int(opt("rssi_min", -999))         # t.ex. -85
-INCLUDE_CONNECTABLE_ONLY= as_bool(opt("include_connectable_only", "0"))
-DEDUP_WINDOW_SEC        = float(opt("dedup_window_sec", 0.5)) # tidsfönster för av-dedup (per address)
-
 # ---- Övrigt ----
 CLIENT_NAME     = opt("client_name", "hotsapp_fwd_bt")
 VERBOSE         = as_bool(opt("verbose", "1"))
 
 # ------ CLIENT ID -------
+import uuid, pathlib
 HA_CORE_UUID_PATH = "/config/.storage/core.uuid"   # needs map: config:ro
 ADDON_CLIENT_ID_PATH = "/data/client_id"           # persistent fallback
-
-
-def _log(msg: str) -> None:
-    print(msg, flush=True)
-
-
-# Optional override via options.json
 CLIENT_ID_OVERRIDE = (opt("client_id_override", "") or "").strip()
 
 def get_client_id() -> str:
@@ -91,7 +75,6 @@ def get_client_id() -> str:
     if CLIENT_ID_OVERRIDE:
         _log(f"[CLIENT_ID] using override from options")
         return CLIENT_ID_OVERRIDE
-
     # 1) try HA core uuid
     try:
         if os.path.exists(HA_CORE_UUID_PATH):
@@ -105,7 +88,6 @@ def get_client_id() -> str:
                 _log(f"[CLIENT_ID] core.uuid found but no 'data.uuid' field")
     except Exception as e:
         _log(f"[CLIENT_ID] failed reading HA core UUID: {e}")
-
     # 2) persistent fallback under /data
     try:
         p = pathlib.Path(ADDON_CLIENT_ID_PATH)
@@ -121,40 +103,12 @@ def get_client_id() -> str:
         return new_id
     except Exception as e:
         _log(f"[CLIENT_ID] fallback write failed: {e}")
-
     # 3) last resort (non-persistent for this process)
     cid = str(uuid.uuid4())
     _log("[CLIENT_ID] WARNING: using ephemeral UUID (no core.uuid and /data not writable)")
     return cid
 
 CLIENT_ID = get_client_id()
-
-
-SEND_INTERVAL_SEC = 5.0  # hårdkodat: skicka var 5:e sekund
-
-_last_temp_by_addr: Dict[str, Dict[str, Any]] = {}  # {"MAC": {"temperature_c": float, "time_iso": str}}
-
-def _flush_pending() -> None:
-    """Skicka senaste kända temperatur per MAC i EN batch och behåll state (så vi skickar även om temp ej ändrats)."""
-    if not _last_temp_by_addr:
-        return
-    events = []
-    for addr, st in _last_temp_by_addr.items():
-        t = st.get("temperature_c")
-        if t is None:
-            continue
-        events.append({
-            "address": addr,
-            "temperature_c": float(t),
-            "time_iso": st.get("time_iso") or datetime.now(timezone.utc).isoformat(),
-        })
-    if not events:
-        return
-    try:
-        _post_batch(events)
-    except Exception as ex:
-        _log(f"[HTTP] POST failed: {ex}")
-
 
 # ---------- HTTP session med retries ----------
 session = requests.Session()
@@ -164,141 +118,12 @@ adapter = HTTPAdapter(
         connect=RETRY_TOTAL,
         read=RETRY_TOTAL,
         backoff_factor=RETRY_BACKOFF,
-        status_forcelist=(500, 502, 503, 504),
+        status_forcelist=(500, 502, 503, 504, 429),
         allowed_methods=None,   # retry även på POST (alla metoder)
     )
 )
 session.mount("http://", adapter)
 session.mount("https://", adapter)
-
-# ---------- Hjälpare ----------
-_last_sent_ts: Dict[str, float] = {}  # per address för dedup-fönster
-
-
-
-def _should_forward(evt: Dict[str, Any]) -> bool:
-    """
-    Event-struktur (enligt HA WebSocket BT-annonser):
-    {
-      "id": <int>, "type": "event", "event": {
-        "address": "AA:BB:..", "rssi": -60, "connectable": true/false,
-        "manufacturer_data": {"76": "base64..." }  # eller dict<int, bytes> beroende på serialisering
-        "service_data": { "uuid": "base64..." },
-        "service_uuids": ["uuid1", "uuid2"],
-        "tx_power": -4, "time": "ISO8601" ...
-      }
-    }
-    """
-    e = evt.get("event") or {}
-    addr = (e.get("address") or "").upper()
-    if not addr:
-        return False
-    rssi = int(e.get("rssi") or -999)
-    connectable = bool(e.get("connectable"))
-
-    if FILTER_ADDRESS and addr != FILTER_ADDRESS.upper():
-        return False
-    if INCLUDE_CONNECTABLE_ONLY and not connectable:
-        return False
-    if rssi < RSSI_MIN:
-        return False
-
-    # service_uuids
-    if FILTER_SERVICE_UUIDS:
-        su = set((e.get("service_uuids") or []))
-        if not (su & FILTER_SERVICE_UUIDS):
-            return False
-
-    # manufacturer ids
-    if FILTER_MANUFACTURER_IDS:
-        md = e.get("manufacturer_data") or {}
-        # nyare HA serialiserar nycklar som str, äldre som int — hantera båda
-        m_ids = {int(k) for k in md.keys()} if md else set()
-        if not (m_ids & FILTER_MANUFACTURER_IDS):
-            return False
-
-    # dedup per address
-    now = time.monotonic()
-    last = _last_sent_ts.get(addr, 0)
-    if now - last < DEDUP_WINDOW_SEC:
-        return False
-    _last_sent_ts[addr] = now
-    return True
-
-def _post_measurement(event_payload: Dict[str, Any]) -> None:
-    # Basheaders inkl. klient-id
-    headers = {
-        "Content-Type": "application/json",
-        "x-client-id": CLIENT_ID,
-    }
-    if API_TOKEN:
-        headers["Authorization"] = f"Bearer {API_TOKEN}"
-
-    body = {
-        "source": "ha_bt",
-        "client": CLIENT_NAME,
-        "received_utc": datetime.now(timezone.utc).isoformat(),
-        "data": event_payload,
-    }
-
-    if DRY_RUN:
-        _log(f"[DRY_RUN] Would POST to {API_URL}: {json.dumps(body)[:600]}")
-        return
-
-    try:
-        _log(f"[HTTP] POST {API_URL} with x-client-id={CLIENT_ID}")
-        r = session.post(API_URL, headers=headers, json=body, timeout=15)
-    except Exception as ex:
-        _log(f"[HTTP] request error before response: {ex}")
-        raise
-
-    # Logga status + (truncerad) svarskropp
-    resp_text = (r.text or "")
-    snippet = resp_text[:800]
-    ct = r.headers.get("Content-Type", "")
-    if r.ok:
-        _log(f"[HTTP] OK {r.status_code} ({ct})")
-        if snippet.strip():
-            _log(f"[HTTP] resp: {snippet}")
-    else:
-        _log(f"[HTTP] ERR {r.status_code} {r.reason} ({ct}); resp: {snippet}")
-        r.raise_for_status()
-
-
-
-def _post_batch(events: list[Dict[str, Any]]) -> None:
-    # Endast temperaturer i data-listan
-    headers = {
-        "Content-Type": "application/json",
-        "x-client-id": CLIENT_ID,
-    }
-    if API_TOKEN:
-        headers["Authorization"] = f"Bearer {API_TOKEN}"
-
-    body = {
-        "source": "ha_bt",
-        "client": CLIENT_NAME,
-        "received_utc": datetime.now(timezone.utc).isoformat(),
-        "data": events,  # t.ex. [{"address": "...", "temperature_c": 23.5, "time_iso": "..."}]
-    }
-
-    if DRY_RUN:
-        _log(f"[DRY_RUN] Would POST (batch={len(events)}) to {API_URL}: {json.dumps(body)[:600]}")
-        return
-
-    r = session.post(API_URL, headers=headers, json=body, timeout=15)
-    ct = r.headers.get("Content-Type", "")
-    snippet = (r.text or "")[:800]
-    if r.ok:
-        _log(f"[HTTP] OK {r.status_code} ({ct}) batch={len(events)}")
-        if snippet.strip():
-            _log(f"[HTTP] resp: {snippet}")
-    else:
-        _log(f"[HTTP] ERR {r.status_code} {r.reason} ({ct}); resp: {snippet}")
-        r.raise_for_status()
-
-
-
 
 # --- ThermoBeacon decoder (manufacturer_data id 16/17) ---
 def _le_u16(buf: bytes, off: int) -> int | None:
@@ -331,13 +156,13 @@ def _md_payload(md: Any, company_id: int) -> bytes | None:
                 return None
     return None
 
-
-
-# Decode temperatur
 def _decode_thermobeacon(manufacturer_data: Any, address: str) -> dict[str, Any] | None:
-    # Prova company id 16 (0x0010) och 17 (0x0011)
+    """
+    Tolerant dekoder: prova offsets runt ankare (omvänd MAC) samt 0/2.
+    Acceptera temp ensam om den är rimlig; fukt/batteri med om rimliga.
+    """
     payload = _md_payload(manufacturer_data, 16) or _md_payload(manufacturer_data, 17)
-    if not payload or len(payload) < 12:
+    if not payload or len(payload) < 6:
         return None
 
     mac_rev = b""
@@ -347,43 +172,51 @@ def _decode_thermobeacon(manufacturer_data: Any, address: str) -> dict[str, Any]
         except Exception:
             pass
 
-    # Ankare: positionen precis efter omvänd MAC om den finns, annars 0/2 som fallback
-    candidates = []
+    candidates: list[int] = []
     if mac_rev and mac_rev in payload:
         base = payload.index(mac_rev) + len(mac_rev)
-        candidates += [base, base-2, base+2]
+        candidates += [base, base - 2, base + 2]
     candidates += [0, 2]
-    tried = set()
 
-    for off in candidates:
-        if off in tried or off < 0 or off+6 > len(payload):
-            continue
-        tried.add(off)
+    best: dict[str, Any] | None = None
+    best_score = -1
+
+    def score(off: int) -> tuple[int, dict[str, Any] | None]:
+        if off < 0 or off + 6 > len(payload):
+            return -1, None
         batt_raw = _le_u16(payload, off)
-        t_raw    = _le_s16(payload, off+2)
-        h_raw    = _le_u16(payload, off+4)
-        if batt_raw is None or t_raw is None or h_raw is None:
+        t_raw    = _le_s16(payload, off + 2)
+        h_raw    = _le_u16(payload, off + 4)
+        cand: dict[str, Any] = {}
+        s = 0
+        if t_raw is not None:
+            temp_c = t_raw / 16.0
+            if -40.0 <= temp_c <= 85.0:
+                cand["temperature_c"] = round(temp_c, 2); s += 1
+        if h_raw is not None:
+            hum = h_raw / 16.0
+            if 0.0 <= hum <= 100.0:
+                cand["humidity_percent"] = round(hum, 2); s += 1
+        if batt_raw is not None:
+            batt_mv = batt_raw if batt_raw > 1000 else batt_raw * 10
+            batt_v  = batt_mv / 1000.0
+            if 2.0 <= batt_v <= 4.5:
+                cand["battery_v"] = round(batt_v, 3)
+                cand["battery_mv"] = int(batt_mv)
+                s += 1
+        return s, (cand if s > 0 else None)
+
+    seen: set[int] = set()
+    for off in candidates:
+        if off in seen:
             continue
+        seen.add(off)
+        s, cand = score(off)
+        if s > best_score and cand:
+            best_score = s
+            best = cand
 
-        temp_c = t_raw / 16.0
-        hum    = h_raw / 16.0
-        # Batteri: vissa varianter kodar i mV (t.ex. 2856), andra i 0.01V (t.ex. 373 => 3.73V)
-        batt_mv = batt_raw if batt_raw > 1000 else batt_raw * 10
-        batt_v  = batt_mv / 1000.0
-
-        # Rimlighetskontroll
-        if -40.0 <= temp_c <= 85.0 and 0.0 <= hum <= 100.0 and 2.0 <= batt_v <= 4.5:
-            return {
-                "temperature_c": round(temp_c, 2),
-                "humidity_percent": round(hum, 2),
-                "battery_v": round(batt_v, 3),
-                "battery_mv": int(batt_mv),
-            }
-
-    return None
-
-
-
+    return best
 
 def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     """Normalisera en annons-post från HA (stöd för olika fältvarianter)."""
@@ -398,7 +231,6 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
 
     manufacturer_data = e.get("manufacturer_data")
     if isinstance(manufacturer_data, list):
-        # Om formatet är [[id, val], ...] -> gör om till {id: val}
         try:
             manufacturer_data = {int(k): v for k, v in manufacturer_data}
         except Exception:
@@ -407,7 +239,6 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
     service_data = e.get("service_data") or e.get("serviceData")
     tstamp = e.get("time") or e.get("timestamp")
 
-    # ISO-tid om vi fick epoch
     time_iso = None
     try:
         if isinstance(tstamp, (int, float)):
@@ -433,62 +264,100 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
         out.update(extra)
     return out
 
+# --- Hårdkodat sändintervall & temp-buffer ---
+SEND_INTERVAL_SEC = 5.0  # skicka var 5:e sekund
+_last_temp_by_addr: Dict[str, Dict[str, Any]] = {}
+_seen_in_window = 0
+_decoded_in_window = 0
 
-# ---------- WebSocket loop ----------
+def _post_batch(events: list[Dict[str, Any]]) -> None:
+    headers = {
+        "Content-Type": "application/json",
+        "x-client-id": CLIENT_ID,
+    }
+    if API_TOKEN:
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
+
+    body = {
+        "source": "ha_bt",
+        "client": CLIENT_NAME,
+        "received_utc": datetime.now(timezone.utc).isoformat(),
+        "data": events,  # [{"address": "...", "temperature_c": 23.5, "time_iso": "..."}]
+    }
+
+    if DRY_RUN:
+        _log(f"[DRY_RUN] Would POST (batch={len(events)}) to {API_URL}: {json.dumps(body)[:600]}")
+        return
+
+    r = session.post(API_URL, headers=headers, json=body, timeout=15)
+    ct = r.headers.get("Content-Type", "")
+    snippet = (r.text or "")[:800]
+    if r.ok:
+        _log(f"[HTTP] OK {r.status_code} ({ct}) batch={len(events)}")
+        if snippet.strip():
+            _log(f"[HTTP] resp: {snippet}")
+    else:
+        _log(f"[HTTP] ERR {r.status_code} {r.reason} ({ct}); resp: {snippet}")
+        r.raise_for_status()
+
+def _flush_pending() -> None:
+    """Skicka senaste kända temperatur per MAC i EN batch och logga även 0-fall."""
+    global _seen_in_window, _decoded_in_window
+    if not _last_temp_by_addr:
+        _log(f"[AGG] flush: 0 temps (seen={_seen_in_window}, decoded={_decoded_in_window})")
+        _seen_in_window = 0
+        _decoded_in_window = 0
+        return
+
+    events = []
+    for addr, st in _last_temp_by_addr.items():
+        t = st.get("temperature_c")
+        if t is None:
+            continue
+        events.append({
+            "address": addr,
+            "temperature_c": float(t),
+            "time_iso": st.get("time_iso") or datetime.now(timezone.utc).isoformat(),
+        })
+
+    _last_temp_by_addr.clear()
+
+    if not events:
+        _log(f"[AGG] flush: 0 temps (seen={_seen_in_window}, decoded={_decoded_in_window})")
+        _seen_in_window = 0
+        _decoded_in_window = 0
+        return
+
+    try:
+        _post_batch(events)
+    finally:
+        _log(f"[AGG] flush: sent {len(events)} temps (seen={_seen_in_window}, decoded={_decoded_in_window})")
+        _seen_in_window = 0
+        _decoded_in_window = 0
+
+# ---------- WebSocket ----------
 def _auth_and_subscribe(ws):
-    # 1) server skickar auth_required
+    # 1) auth_required
     msg = json.loads(ws.recv())
-    if VERBOSE:
-        _log(f"[WS] <- {msg.get('type')}")
-
     if msg.get("type") != "auth_required":
-        raise RuntimeError("Expected auth_required from HA WebSocket")
-
-    # 2) skicka auth
+        raise RuntimeError(f"Expected auth_required, got {msg.get('type')}")
+    # 2) auth
     if not SUPERVISOR_TOKEN:
         raise RuntimeError("SUPERVISOR_TOKEN saknas (krävs i add-ons).")
-
     ws.send(json.dumps({"type": "auth", "access_token": SUPERVISOR_TOKEN}))
     msg = json.loads(ws.recv())
     if msg.get("type") != "auth_ok":
         raise RuntimeError(f"Auth failed: {msg}")
-
-    if VERBOSE:
-        _log("[WS] Auth OK")
-
-    # 3) subscribe till Bluetooth-annonser
-    #    (WebSocket-kommando 'bluetooth/subscribe_advertisements')
-    #    Filtren skickas inte här — vi filtrerar lokalt för maximal flexibilitet.
+    _log("[WS] Auth OK")
+    # 3) subscribe
     sub = {"id": 1, "type": "bluetooth/subscribe_advertisements"}
     ws.send(json.dumps(sub))
-    if VERBOSE:
-        _log("[WS] -> bluetooth/subscribe_advertisements skickad")
+    _log("[WS] -> bluetooth/subscribe_advertisements skickad")
 
-
-# --- Hårdkodat sändintervall & buffer ---
-SEND_INTERVAL_SEC = 5.0  # skicka var 5:e sekund, hårdkodat
-
-_latest_by_addr: Dict[str, Dict[str, Any]] = {}  # senaste e_norm per MAC
-
-def _flush_pending() -> None:
-    """Skicka senaste observation per MAC och töm bufferten."""
-    if not _latest_by_addr:
-        return
-    items = list(_latest_by_addr.items())
-    for addr, e_norm in items:
-        try:
-            _post_measurement(e_norm)
-        except Exception as ex:
-            _log(f"[HTTP] POST failed: {ex}")
-    _latest_by_addr.clear()
-    _log(f"[AGG] Flushed {len(items)} events")
-
-
-    
 def _event_loop(ws):
-    # Timeout så vi kan flusha periodiskt
+    global _seen_in_window, _decoded_in_window
     try:
-        ws.settimeout(1.0)
+        ws.settimeout(1.0)  # gör recv icke-blockerande nog för periodic flush
     except Exception:
         pass
 
@@ -501,17 +370,17 @@ def _event_loop(ws):
 
             if msg.get("type") == "event" and "event" in msg:
                 ev = msg["event"] or {}
-
-                # Batch-listor
+                # Batch: add/update/remove
                 if any(isinstance(ev.get(k), list) for k in ("add", "update", "remove")):
                     for kind in ("add", "update"):
                         for rec in (ev.get(kind) or []):
+                            _seen_in_window += 1
                             e_norm = _normalize_adv(rec)
                             addr = (e_norm.get("address") or "").upper()
                             if not addr:
                                 continue
-                            # Spara endast om vi har temperatur
                             if "temperature_c" in e_norm and e_norm["temperature_c"] is not None:
+                                _decoded_in_window += 1
                                 _last_temp_by_addr[addr] = {
                                     "temperature_c": e_norm["temperature_c"],
                                     "time_iso": e_norm.get("time_iso"),
@@ -521,36 +390,30 @@ def _event_loop(ws):
                     e = ev or {}
                     if "address" not in e and isinstance(e.get("data"), dict):
                         e = e["data"]
+                    _seen_in_window += 1
                     e_norm = _normalize_adv(e)
                     addr = (e_norm.get("address") or "").upper()
                     if addr and ("temperature_c" in e_norm) and (e_norm["temperature_c"] is not None):
+                        _decoded_in_window += 1
                         _last_temp_by_addr[addr] = {
                             "temperature_c": e_norm["temperature_c"],
                             "time_iso": e_norm.get("time_iso"),
                         }
 
         except WebSocketTimeoutException:
-            # tyst; vi använder detta fönster för att kolla flush
+            # ingen data just nu
             pass
 
-        # Flush var 5:e sekund (hårdkodat)
         now = time.monotonic()
         if now - last_flush >= SEND_INTERVAL_SEC:
             _flush_pending()
             last_flush = now
-
-
-
-
-
-
 
 def main():
     # Reconnect-loop
     backoff = 1.0
     while True:
         try:
-            # OBS: i add-ons fungerar ws://supervisor/core/websocket utan extra cert-hantering
             ws = create_connection(
                 HA_WS_URL,
                 header=[f"Authorization: Bearer {SUPERVISOR_TOKEN}"],
@@ -559,7 +422,7 @@ def main():
             )
             _log(f"[WS] Connected to {HA_WS_URL}")
             _auth_and_subscribe(ws)
-            backoff = 1.0  # reset backoff efter lyckad auth
+            backoff = 1.0  # reset efter lyckad auth
             _event_loop(ws)
         except (WebSocketConnectionClosedException, ConnectionError) as e:
             _log(f"[WS] connection dropped: {e}")
@@ -570,7 +433,6 @@ def main():
                 ws.close()
             except Exception:
                 pass
-            # Exponentiell backoff vid reconnect
             time.sleep(backoff)
             backoff = min(backoff * 2, 30)
 
