@@ -255,7 +255,11 @@ def _post_batch(events: list[Dict[str, Any]]) -> None:
         "x-client-id": CLIENT_ID,
     }
     if API_TOKEN:
-        headers["Authorization"] = f"Bearer {API_TOKEN}"
+        headers = {
+            "Authorization": f"Bearer {API_TOKEN}" if API_TOKEN else "",
+            "Content-Type": "application/json; charset=utf-8",  # <-- viktigt
+        }
+        
 
     body = {
         "source": "ha_bt",
