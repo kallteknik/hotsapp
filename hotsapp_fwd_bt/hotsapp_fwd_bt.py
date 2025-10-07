@@ -243,7 +243,6 @@ def _flush_pending() -> None:
             "address": addr,
             "temperature_c": float(t),
             "time_iso": st.get("time_iso") or datetime.now(timezone.utc).isoformat(),
-            "name": st.get("name"),
         })
 
     _last_temp_by_addr.clear()
@@ -255,7 +254,8 @@ def _flush_pending() -> None:
         return
 
     try:
-        _post_batch(events)
+        for ev in events:
+            _post_batch([ev])
     finally:
         _log(f"[AGG] flush: sent {len(events)} temps (seen={_seen_in_window}, decoded={_decoded_in_window})")
         _seen_in_window = 0
@@ -310,7 +310,6 @@ def _event_loop(ws):
                                 _last_temp_by_addr[addr] = {
                                     "temperature_c": e_norm["temperature_c"],
                                     "time_iso": e_norm.get("time_iso"),
-                                    "name": e_norm.get("name"),
                                 }
                 else:
                     # Singel-event
