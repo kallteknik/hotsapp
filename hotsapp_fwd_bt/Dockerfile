@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # Bumpa denna när du vill forsa om-bygge i CI
-ARG BUILD_NOCACHE=manual_0_0_17
+ARG BUILD_NOCACHE=manual_0_0_18
 
 # Basala verktyg (jq kan vara smidigt vid felsökning), inga onödiga rekommenderade paket
 RUN apt-get update \
@@ -22,6 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App-kod och startscript
 COPY hotsapp_fwd_bt.py .
 COPY run.sh /run.sh
+COPY sensors ./sensors
 
 # Se till att startscriptet är körbart
 RUN chmod +x /run.sh
