@@ -279,14 +279,60 @@ def _post_batch(events: list[Dict[str, Any]]) -> None:
         _log(f"[HTTP] ERR {r.status_code} {r.reason} ({ct}); resp: {snippet}")
         r.raise_for_status()
 
+
+
+
 def _flush_pending() -> None:
+    """Hämta alla HA-entities (sensor+switch), baka ihop till en JSON och skicka i ett anrop."""
+    global _seen_in_window, _decoded_in_window
+
+    # 1) Hämta allt vi vill ha från HA
     events = _collect_from_ha_states(session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch"))
+
     if not events:
-        _log("[AGG] flush: 0 temps")
+        _log(f"[AGG] flush: 0 entities (seen={_seen_in_window}, decoded={_decoded_in_window})")
+        _seen_in_window = 0
+        _decoded_in_window = 0
         return
+
+    # 2) Gruppera till en enda struktur
+    agg = {"sensors": {}, "switches": {}}
     for ev in events:
-        _post_batch([ev])
-    _log(f"[AGG] flush: sent {len(events)} temps")
+        ent_id = ev.get("entity_id", "")
+        domain = ent_id.split(".", 1)[0] if "." in ent_id else ""
+        bucket = "sensors" if domain == "sensor" else ("switches" if domain == "switch" else None)
+        if not bucket:
+            continue
+
+        entry = {
+            "name": ev.get("name"),
+            "state_raw": ev.get("state_raw"),
+            "value_num": ev.get("value_num"),
+            "unit": ev.get("unit"),
+            "time_iso": ev.get("time_iso"),
+            "attributes": (ev.get("ha") or {}).get("attributes") if isinstance(ev.get("ha"), dict) else None,
+        }
+        if ev.get("address"):
+            entry["address"] = ev["address"]
+
+        agg[bucket][ent_id] = entry
+
+    # 3) Skicka som EN post (återanvänder _post_batch men med ett "aggregate"-event)
+    try:
+        _post_batch([{
+            "aggregate": agg,
+            "time_iso": datetime.now(timezone.utc).isoformat(),
+            "source": "ha_state_aggregate",
+        }])
+    finally:
+        _log(
+            f"[AGG] flush: sent aggregate "
+            f"(sensors={len(agg['sensors'])}, switches={len(agg['switches'])}; "
+            f"seen={_seen_in_window}, decoded={_decoded_in_window})"
+        )
+        _seen_in_window = 0
+        _decoded_in_window = 0
+
 
 
 

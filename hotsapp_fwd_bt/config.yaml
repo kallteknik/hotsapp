@@ -1,5 +1,5 @@
 name: Hotsapp BT REST Forwarder
-version: "0.0.25"
+version: "0.0.26"
 slug: hotsapp_fwd_bt
 description: Forwards Bluetooth advertisements from HA to an HTTP API.
 arch:
