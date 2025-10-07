@@ -131,8 +131,8 @@ session.mount("https://", adapter)
 
 
 
-def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN):
-    """Return a list of events from HA's current states: one per temperature sensor."""
+def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch")):
+    """Hämta nuvarande HA-states för angivna domäner och gör en event-lista (en per entitet)."""
     api_url = "http://supervisor/core/api/states"
     headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
     try:
@@ -147,32 +147,43 @@ def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN):
     events = []
     for s in data:
         ent_id = s.get("entity_id") or ""
-        if not ent_id.startswith("sensor."):
+        if not any(ent_id.startswith(d + ".") for d in include_domains):
             continue
+
         attrs = s.get("attributes") or {}
-        # Only temperature sensors (same as HA UI)
-        if attrs.get("device_class") != "temperature":
-            continue
-        # Parse temperature
+        state_raw = s.get("state")
+
+        # Försök tolka numeriskt värde (annars None, t.ex. för switch on/off)
+        value_num = None
         try:
-            temp_c = float(s.get("state"))
+            value_num = float(state_raw)
         except Exception:
-            continue
+            pass
 
-        # Friendly name and optional MAC (if integration exposes it)
         name = attrs.get("friendly_name") or ent_id
-        addr = attrs.get("mac") or attrs.get("mac_address") or None
+        addr = attrs.get("mac") or attrs.get("mac_address") or attrs.get("address")
 
-        events.append({
-            # keep address if we can find it; otherwise leave None
-            "address": addr,
+        ev = {
             "entity_id": ent_id,
-            "temperature_c": temp_c,
-            "time_iso": s.get("last_changed") or now_iso,
             "name": name,
+            "state_raw": state_raw,
+            "value_num": value_num,  # kan vara None
+            "unit": attrs.get("unit_of_measurement"),
+            "time_iso": s.get("last_changed") or now_iso,
             "source": "ha_state",
-        })
+            "ha": {
+                "attributes": attrs,
+                "last_changed": s.get("last_changed"),
+                "last_updated": s.get("last_updated"),
+            },
+        }
+        if addr:
+            ev["address"] = addr
+
+        events.append(ev)
+
     return events
+
 
 
 
@@ -269,7 +280,7 @@ def _post_batch(events: list[Dict[str, Any]]) -> None:
         r.raise_for_status()
 
 def _flush_pending() -> None:
-    events = _collect_from_ha_states(session, SUPERVISOR_TOKEN)
+    events = _collect_from_ha_states(session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch"))
     if not events:
         _log("[AGG] flush: 0 temps")
         return
