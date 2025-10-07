@@ -269,40 +269,15 @@ def _post_batch(events: list[Dict[str, Any]]) -> None:
         r.raise_for_status()
 
 def _flush_pending() -> None:
-    """Skicka senaste kända temperatur per MAC i EN batch och logga även 0-fall."""
-    global _seen_in_window, _decoded_in_window
-    if not _last_temp_by_addr:
-        _log(f"[AGG] flush: 0 temps (seen={_seen_in_window}, decoded={_decoded_in_window})")
-        _seen_in_window = 0
-        _decoded_in_window = 0
-        return
-
-    events = []
-    for addr, st in _last_temp_by_addr.items():
-        t = st.get("temperature_c")
-        if t is None:
-            continue
-        events.append({
-            "address": addr,
-            "temperature_c": float(t),
-            "time_iso": st.get("time_iso") or datetime.now(timezone.utc).isoformat(),
-        })
-
-    _last_temp_by_addr.clear()
-
+    events = _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN)
     if not events:
-        _log(f"[AGG] flush: 0 temps (seen={_seen_in_window}, decoded={_decoded_in_window})")
-        _seen_in_window = 0
-        _decoded_in_window = 0
+        _log("[AGG] flush: 0 temps")
         return
+    for ev in events:
+        _post_batch([ev])
+    _log(f"[AGG] flush: sent {len(events)} temps")
 
-    try:
-        for ev in events:
-            _post_batch([ev])
-    finally:
-        _log(f"[AGG] flush: sent {len(events)} temps (seen={_seen_in_window}, decoded={_decoded_in_window})")
-        _seen_in_window = 0
-        _decoded_in_window = 0
+
 
 # ---------- WebSocket ----------
 def _auth_and_subscribe(ws):
