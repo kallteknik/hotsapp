@@ -269,7 +269,7 @@ def _post_batch(events: list[Dict[str, Any]]) -> None:
         r.raise_for_status()
 
 def _flush_pending() -> None:
-    events = _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN)
+    events = _collect_from_ha_states(session, SUPERVISOR_TOKEN)
     if not events:
         _log("[AGG] flush: 0 temps")
         return

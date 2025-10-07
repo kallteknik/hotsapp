@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # Bumpa denna när du vill forsa om-bygge i CI
-ARG BUILD_NOCACHE=manual_0_0_23
+ARG BUILD_NOCACHE=manual_0_0_24
 
 # Basala verktyg (jq kan vara smidigt vid felsökning), inga onödiga rekommenderade paket
 RUN apt-get update \
