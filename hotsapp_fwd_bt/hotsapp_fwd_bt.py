@@ -131,6 +131,49 @@ session.mount("https://", adapter)
 
 
 
+def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN):
+    """Return a list of events from HA's current states: one per temperature sensor."""
+    api_url = "http://supervisor/core/api/states"
+    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+    try:
+        r = _requests_session.get(api_url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        print(f"[HA] states fetch failed: {e}")
+        return []
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    events = []
+    for s in data:
+        ent_id = s.get("entity_id") or ""
+        if not ent_id.startswith("sensor."):
+            continue
+        attrs = s.get("attributes") or {}
+        # Only temperature sensors (same as HA UI)
+        if attrs.get("device_class") != "temperature":
+            continue
+        # Parse temperature
+        try:
+            temp_c = float(s.get("state"))
+        except Exception:
+            continue
+
+        # Friendly name and optional MAC (if integration exposes it)
+        name = attrs.get("friendly_name") or ent_id
+        addr = attrs.get("mac") or attrs.get("mac_address") or None
+
+        events.append({
+            # keep address if we can find it; otherwise leave None
+            "address": addr,
+            "entity_id": ent_id,
+            "temperature_c": temp_c,
+            "time_iso": s.get("last_changed") or now_iso,
+            "name": name,
+            "source": "ha_state",
+        })
+    return events
+
 
 
 
