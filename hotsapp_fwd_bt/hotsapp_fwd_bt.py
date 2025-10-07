@@ -243,6 +243,7 @@ def _flush_pending() -> None:
             "address": addr,
             "temperature_c": float(t),
             "time_iso": st.get("time_iso") or datetime.now(timezone.utc).isoformat(),
+            "name": st.get("name"),
         })
 
     _last_temp_by_addr.clear()
@@ -309,6 +310,7 @@ def _event_loop(ws):
                                 _last_temp_by_addr[addr] = {
                                     "temperature_c": e_norm["temperature_c"],
                                     "time_iso": e_norm.get("time_iso"),
+                                    "name": e_norm.get("name"),
                                 }
                 else:
                     # Singel-event
