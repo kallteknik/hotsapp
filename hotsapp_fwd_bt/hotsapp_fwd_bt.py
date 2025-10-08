@@ -129,6 +129,46 @@ session.mount("https://", adapter)
 
 
 
+def _build_area_lookup(_requests_session, SUPERVISOR_TOKEN) -> dict[str, str]:
+    """Bygger upp entity_id -> area_name via HA:s area/device/entity-register."""
+    base = "http://supervisor/core/api/config"
+    headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
+
+    try:
+        areas   = _requests_session.get(f"{base}/area_registry/list",   headers=headers, timeout=10).json()
+        devices = _requests_session.get(f"{base}/device_registry/list", headers=headers, timeout=10).json()
+        ents    = _requests_session.get(f"{base}/entity_registry/list", headers=headers, timeout=10).json()
+    except Exception as e:
+        print(f"[HA] registry fetch failed: {e}")
+        return {}
+
+    area_id_to_name = {}
+    for a in (areas or []):
+        aid = a.get("id")
+        if not aid:
+            continue
+        area_id_to_name[aid] = a.get("name") or aid
+
+    device_to_area = {}
+    for d in (devices or []):
+        did = d.get("id")
+        if not did:
+            continue
+        device_to_area[did] = d.get("area_id")
+
+    entity_to_area_name = {}
+    for e in (ents or []):
+        ent_id   = e.get("entity_id")
+        if not ent_id:
+            continue
+        area_id = e.get("area_id") or device_to_area.get(e.get("device_id"))
+        if area_id and area_id in area_id_to_name:
+            entity_to_area_name[ent_id] = area_id_to_name[area_id]
+
+    return entity_to_area_name
+
+
+
 
 def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch")):
     """Hämta nuvarande HA-states för angivna domäner och gör en event-lista (en per entitet)."""
@@ -142,7 +182,10 @@ def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains
         print(f"[HA] states fetch failed: {e}")
         return []
 
+
     now_iso = datetime.now(timezone.utc).isoformat()
+    area_by_entity = _build_area_lookup(_requests_session, SUPERVISOR_TOKEN)    
+
     events = []
     for s in data:
         ent_id = s.get("entity_id") or ""
@@ -176,6 +219,9 @@ def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains
                 "last_updated": s.get("last_updated"),
             },
         }
+        area_name = area_by_entity.get(ent_id)
+        if area_name:
+            ev["area"] = area_name        
         if addr:
             ev["address"] = addr
 
@@ -316,9 +362,12 @@ def _flush_pending() -> None:
             "time_iso": ev.get("time_iso"),
             "attributes": (ev.get("ha") or {}).get("attributes") if isinstance(ev.get("ha"), dict) else None,
         }
+ 
         if ev.get("address"):
             entry["address"] = ev["address"]
-
+        if ev.get("area"):
+            entry["area"] = ev["area"]       
+            
         agg[bucket][ent_id] = entry
 
     # 3) Skicka som EN post (återanvänder _post_batch men med ett "aggregate"-event)
