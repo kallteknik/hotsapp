@@ -211,7 +211,7 @@ def _build_area_lookup_ws(ws) -> Dict[str, str]:
 
 
 
-def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch")):
+def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch"), ws=None):    
     """Hämta nuvarande HA-states för angivna domäner och gör en event-lista (en per entitet)."""
     api_url = "http://supervisor/core/api/states"
     headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
@@ -227,7 +227,9 @@ def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains
     now_iso = datetime.now(timezone.utc).isoformat()
     
     #area_by_entity = _build_area_lookup(_requests_session, SUPERVISOR_TOKEN) 
-    area_by_entity = _build_area_lookup_ws(ws)
+    #area_by_entity = _build_area_lookup_ws(ws)
+    #area_by_entity = _build_area_lookup(_requests_session, SUPERVISOR_TOKEN)
+    area_by_entity = _build_area_lookup_ws(ws) if ws is not None else {}    
 
     _log(f"[AREA] loaded {len(area_by_entity)} mapped entities")
     
@@ -376,12 +378,12 @@ def _post_batch(events: list[Dict[str, Any]]) -> None:
 
 
 
-def _flush_pending() -> None:
+def _flush_pending(ws=None) -> None:    
     """Hämta alla HA-entities (sensor+switch), baka ihop till en JSON och skicka i ett anrop."""
     global _seen_in_window, _decoded_in_window
 
     # 1) Hämta allt vi vill ha från HA
-    events = _collect_from_ha_states(session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch"))
+    events = _collect_from_ha_states(session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch"), ws=ws)
 
     if not events:
         _log(f"[AGG] flush: 0 entities (seen={_seen_in_window}, decoded={_decoded_in_window})")
@@ -454,6 +456,7 @@ def _auth_and_subscribe(ws):
     ##_log("[WS] -> bluetooth/subscribe_advertisements skickad")
 
 def _event_loop(ws):
+    
     global _seen_in_window, _decoded_in_window
     try:
         ws.settimeout(1.0)  # gör recv icke-blockerande nog för periodic flush
@@ -504,8 +507,9 @@ def _event_loop(ws):
             pass
 
         now = time.monotonic()
+
         if now - last_flush >= SEND_INTERVAL_SEC:
-            _flush_pending()
+            _flush_pending(ws)            
             last_flush = now
 
 def main():
@@ -522,8 +526,9 @@ def main():
             _log(f"[WS] Connected to {HA_WS_URL}")
             _auth_and_subscribe(ws)
             backoff = 1.0  # reset efter lyckad auth
+
             _log("[TX] startup: immediate send")
-            _flush_pending()            
+            _flush_pending(ws)
 
             _event_loop(ws)
         except (WebSocketConnectionClosedException, ConnectionError) as e:
