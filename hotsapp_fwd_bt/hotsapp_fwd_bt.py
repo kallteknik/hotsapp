@@ -128,6 +128,9 @@ session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 
+if _has_pending():
+    log("[TX] startup: immediate send")
+    _flush_pending()
 
 
 def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch")):
@@ -355,9 +358,9 @@ def _auth_and_subscribe(ws):
         raise RuntimeError(f"Auth failed: {msg}")
     _log("[WS] Auth OK")
     # 3) subscribe
-    sub = {"id": 1, "type": "bluetooth/subscribe_advertisements"}
-    ws.send(json.dumps(sub))
-    _log("[WS] -> bluetooth/subscribe_advertisements skickad")
+    ##sub = {"id": 1, "type": "bluetooth/subscribe_advertisements"}
+    ##ws.send(json.dumps(sub))
+    ##_log("[WS] -> bluetooth/subscribe_advertisements skickad")
 
 def _event_loop(ws):
     global _seen_in_window, _decoded_in_window
