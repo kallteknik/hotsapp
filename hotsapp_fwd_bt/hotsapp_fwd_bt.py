@@ -19,12 +19,18 @@ import ssl as _ssl
 import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict
+from itertools import count
 
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from websocket import create_connection, WebSocketConnectionClosedException, WebSocketTimeoutException
 
+# Global inkrementerande id för WS-kommandon (HA kräver bara ett heltal)
+_ws_id_counter = count(1)
+
+def next_id() -> int:
+    return next(_ws_id_counter)
 
 # ---------- Konfiguration från miljö och options.json ----------
 ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
