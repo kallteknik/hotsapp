@@ -58,7 +58,7 @@ def _log(msg: str) -> None:
 
 # ---- HTTP-forward inställningar ----
 API_URL         = opt("api_url",  "https://api.exempel.se/measurements")
-API_TOKEN       = opt("api_token")
+API_TOKEN = (opt("api_token") or "").strip()
 DRY_RUN         = as_bool(opt("dry_run", "0"))
 RETRY_TOTAL     = int(opt("retry_total", 5))
 RETRY_BACKOFF   = float(opt("retry_backoff", 1.0))
@@ -250,15 +250,24 @@ _seen_in_window = 0
 _decoded_in_window = 0
 
 def _post_batch(events: list[Dict[str, Any]]) -> None:
+
     headers = {
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json",
         "x-client-id": CLIENT_ID,
     }
     if API_TOKEN:
-        headers = {
-            "Authorization": f"Bearer {API_TOKEN}" if API_TOKEN else "",
-            "Content-Type": "application/json; charset=utf-8",  # <-- viktigt
-        }
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
+
+    #headers = {
+    #    "Content-Type": "application/json",
+    #    "x-client-id": CLIENT_ID,
+    #}
+    #if API_TOKEN:
+    #    headers = {
+    #        "Authorization": f"Bearer {API_TOKEN}" if API_TOKEN else "",
+    #        "Content-Type": "application/json; charset=utf-8",  # <-- viktigt
+    #    }
         
 
     body = {
