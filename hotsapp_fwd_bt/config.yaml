@@ -1,5 +1,5 @@
 name: Hotsapp BT REST Forwarder
-version: "0.0.29"
+version: "0.0.30"
 slug: hotsapp_fwd_bt
 description: Forwards Bluetooth advertisements from HA to an HTTP API.
 arch:
@@ -22,6 +22,7 @@ options:
   dry_run: false
   retry_total: 5
   retry_backoff: 1.0
+  send_interval_sec: 60
 
   bt_address: ""
   bt_service_uuids: []
@@ -40,6 +41,7 @@ schema:
   dry_run: bool
   retry_total: int
   retry_backoff: float
+  send_interval_sec: int
 
   bt_address: str
   bt_service_uuids:

@@ -25,8 +25,6 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from websocket import create_connection, WebSocketConnectionClosedException, WebSocketTimeoutException
 
-from sensors.thermobeacon import decode as decode_thermobeacon
-
 
 # ---------- Konfiguration från miljö och options.json ----------
 ADDON_OPTIONS_PATH = os.getenv("ADDON_OPTIONS_PATH", "/data/options.json")
@@ -62,6 +60,7 @@ API_TOKEN = (opt("api_token") or "").strip()
 DRY_RUN         = as_bool(opt("dry_run", "0"))
 RETRY_TOTAL     = int(opt("retry_total", 5))
 RETRY_BACKOFF   = float(opt("retry_backoff", 1.0))
+SEND_INTERVAL_SEC = float(opt("send_interval_sec", 10.0))
 
 # ---- Övrigt ----
 CLIENT_NAME     = opt("client_name", "hotsapp_fwd_bt")
@@ -231,20 +230,8 @@ def _normalize_adv(e: Dict[str, Any]) -> Dict[str, Any]:
         "time_iso": time_iso,
     }
 
-    prev_t = None
-    try:
-        prev_t = (_last_temp_by_addr.get(address, {}) or {}).get("temperature_c")
-    except Exception:
-        prev_t = None
-
-    extra = decode_thermobeacon(manufacturer_data, address, prev_t)
-
-    if extra:
-        out.update(extra)
     return out
 
-# --- Hårdkodat sändintervall & temp-buffer ---
-SEND_INTERVAL_SEC = 10.0  # skicka var 5:e sekund
 _last_temp_by_addr: Dict[str, Dict[str, Any]] = {}
 _seen_in_window = 0
 _decoded_in_window = 0
@@ -321,6 +308,7 @@ def _flush_pending() -> None:
             continue
 
         entry = {
+            "entity_id": ent_id,
             "name": ev.get("name"),
             "state_raw": ev.get("state_raw"),
             "value_num": ev.get("value_num"),
