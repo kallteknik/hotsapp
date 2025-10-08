@@ -179,7 +179,7 @@ def _ws_cmd(ws, typ):
             _log(f"[WS] {typ} failed: {msg.get('error')}")
             return []
 
-def _build_area_lookup_ws(ws) -> dict[str, str]:
+def _build_area_lookup_ws(ws) -> Dict[str, str]:
     """entity_id -> area_name via HA:s WebSocket-register."""
     areas   = _ws_cmd(ws, "config/area_registry/list")
     devices = _ws_cmd(ws, "config/device_registry/list")
