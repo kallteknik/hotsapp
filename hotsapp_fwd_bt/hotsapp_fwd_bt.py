@@ -281,7 +281,10 @@ def _post_batch(events: list[Dict[str, Any]]) -> None:
         _log(f"[DRY_RUN] Would POST (batch={len(events)}) to {API_URL}: {json.dumps(body)[:600]}")
         return
 
-    r = session.post(API_URL, headers=headers, json=body, timeout=15)
+    #r = session.post(API_URL, headers=headers, json=body, timeout=15)
+    body_bytes = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    r = session.post(API_URL, headers=headers, data=body_bytes, timeout=15)
+
     ct = r.headers.get("Content-Type", "")
     snippet = (r.text or "")[:800]
     if r.ok:
