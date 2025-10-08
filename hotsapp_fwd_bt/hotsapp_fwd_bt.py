@@ -185,7 +185,8 @@ def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains
 
     now_iso = datetime.now(timezone.utc).isoformat()
     area_by_entity = _build_area_lookup(_requests_session, SUPERVISOR_TOKEN)    
-
+    _log(f"[AREA] loaded {len(area_by_entity)} mapped entities")
+    
     events = []
     for s in data:
         ent_id = s.get("entity_id") or ""
