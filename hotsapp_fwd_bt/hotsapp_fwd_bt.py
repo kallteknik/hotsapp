@@ -128,9 +128,6 @@ session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 
-if _has_pending():
-    log("[TX] startup: immediate send")
-    _flush_pending()
 
 
 def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains=("sensor", "switch")):
@@ -431,6 +428,9 @@ def main():
             _log(f"[WS] Connected to {HA_WS_URL}")
             _auth_and_subscribe(ws)
             backoff = 1.0  # reset efter lyckad auth
+            _log("[TX] startup: immediate send")
+            _flush_pending()            
+
             _event_loop(ws)
         except (WebSocketConnectionClosedException, ConnectionError) as e:
             _log(f"[WS] connection dropped: {e}")
