@@ -129,7 +129,7 @@ session.mount("https://", adapter)
 
 
 
-def _build_area_lookup(_requests_session, SUPERVISOR_TOKEN) -> dict[str, str]:
+""" def _build_area_lookup(_requests_session, SUPERVISOR_TOKEN) -> dict[str, str]:
     """Bygger upp entity_id -> area_name via HA:s area/device/entity-register."""
     base = "http://supervisor/core/api/config"
     headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
@@ -165,7 +165,48 @@ def _build_area_lookup(_requests_session, SUPERVISOR_TOKEN) -> dict[str, str]:
         if area_id and area_id in area_id_to_name:
             entity_to_area_name[ent_id] = area_id_to_name[area_id]
 
-    return entity_to_area_name
+    return entity_to_area_name """
+
+
+def _ws_cmd(ws, typ):
+    rid = next_id()  # använder din befintliga id-räknare
+    ws.send(json.dumps({"id": rid, "type": typ}))
+    while True:
+        msg = json.loads(ws.recv())
+        if msg.get("id") == rid:
+            if msg.get("success", False):
+                return msg.get("result") or []
+            _log(f"[WS] {typ} failed: {msg.get('error')}")
+            return []
+
+def _build_area_lookup_ws(ws) -> dict[str, str]:
+    """entity_id -> area_name via HA:s WebSocket-register."""
+    areas   = _ws_cmd(ws, "config/area_registry/list")
+    devices = _ws_cmd(ws, "config/device_registry/list")
+    ents    = _ws_cmd(ws, "config/entity_registry/list")
+
+    # area_id -> name
+    area_id_to_name = {}
+    for a in (areas or []):
+        # fältet heter 'id' i area-registret enligt dev-dokumentationen
+        aid = a.get("id") or a.get("area_id")
+        if aid:
+            area_id_to_name[aid] = a.get("name") or aid
+
+    # device_id -> area_id
+    device_to_area = {d.get("id"): d.get("area_id") for d in (devices or []) if d.get("id")}
+
+    # entity_id -> area_name
+    out = {}
+    for e in (ents or []):
+        ent_id = e.get("entity_id")
+        if not ent_id:
+            continue
+        area_id = e.get("area_id") or device_to_area.get(e.get("device_id"))
+        name = area_id_to_name.get(area_id)
+        if name:
+            out[ent_id] = name
+    return out
 
 
 
@@ -184,7 +225,10 @@ def _collect_from_ha_states(_requests_session, SUPERVISOR_TOKEN, include_domains
 
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    area_by_entity = _build_area_lookup(_requests_session, SUPERVISOR_TOKEN)    
+    
+    #area_by_entity = _build_area_lookup(_requests_session, SUPERVISOR_TOKEN) 
+    area_by_entity = _build_area_lookup_ws(ws)
+
     _log(f"[AREA] loaded {len(area_by_entity)} mapped entities")
     
     events = []
