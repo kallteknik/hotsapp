@@ -130,7 +130,7 @@ session.mount("https://", adapter)
 
 
 """ def _build_area_lookup(_requests_session, SUPERVISOR_TOKEN) -> dict[str, str]:
-    """Bygger upp entity_id -> area_name via HA:s area/device/entity-register."""
+    ""Bygger upp entity_id -> area_name via HA:s area/device/entity-register.""
     base = "http://supervisor/core/api/config"
     headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
 
