@@ -1,5 +1,5 @@
 name: Hotsapp Data Collector
-version: "0.0.39"
+version: "0.1.2"
 slug: hotsapp_data_collector
 description: Intervall data collector and API uploader.
 arch:
