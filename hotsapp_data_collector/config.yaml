@@ -1,0 +1,56 @@
+name: Hotsapp Data Collector
+version: "0.0.39"
+slug: hotsapp_data_collector
+description: Intervall data collector and API uploader.
+arch:
+  - aarch64
+  - armv7
+  - amd64
+init: false
+startup: services
+boot: auto
+host_network: true
+map:
+  - config:ro
+# Ger add-onen tillgång till Home Assistant Core API (inkl. WebSocket via proxy)
+homeassistant_api: true
+
+# Standardvärden (syns i UI och blir underlag för /data/options.json vid körning)
+options:
+  api_url: "https://account.hotsappcenter.com/api/api.php"
+  api_token: "kassaskap"
+  dry_run: false
+  retry_total: 5
+  retry_backoff: 1.0
+  send_interval_sec: 60
+
+  bt_address: ""
+  bt_service_uuids: []
+  bt_manufacturer_ids: []
+  rssi_min: -999
+  include_connectable_only: false
+  dedup_window_sec: 0.5
+
+  client_name: "hotsapp_data_collector"
+  verbose: true
+
+# Valideringsschema för alternativen ovan
+schema:
+  api_url: str
+  api_token: str
+  dry_run: bool
+  retry_total: int
+  retry_backoff: float
+  send_interval_sec: int
+
+  bt_address: str
+  bt_service_uuids:
+    - str
+  bt_manufacturer_ids:
+    - int
+  rssi_min: int
+  include_connectable_only: bool
+  dedup_window_sec: float
+
+  client_name: str
+  verbose: bool
