@@ -22,7 +22,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App-kod och startscript
 COPY hotsapp_data_collector.py .
 COPY run.sh /run.sh
-COPY sensors ./sensors
 
 # Se till att startscriptet är körbart
 RUN chmod +x /run.sh
